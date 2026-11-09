@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Hop Hop Hill</title>
+<!--
+  HOP HOP HILL
+  A simple side-scrolling platformer. Run, jump, grab coins, stomp the
+  slimes, avoid the spikes and reach the flag. Three levels.
+
+  Controls: ← → / A D to run, Space / ↑ / W to jump (hold for a higher
+  jump), R to restart the level, Esc to go back to the hub.
+  On touch screens, on-screen buttons appear.
+
+  Single self-contained file: HTML + CSS + JavaScript (Canvas API).
+  No external libraries or assets.
+
+  Levels are plain text maps in LEVELS below. Legend:
+    #  ground block          =  one-way platform (jump up through it)
+    ^  spikes                o  coin
+    s  slime (walks, stomp it from above)
+    m  moving platform (slides left/right)
+    P  player start          F  goal flag
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #10172a; overflow: hidden; touch-action: none; }
+  body { display: flex; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
+  canvas { display: block; max-width: 100vw; max-height: 100vh; box-shadow: 0 0 40px rgba(0,0,0,.5); image-rendering: pixelated; }
+  #back { position: fixed; top: 10px; left: 10px; color: #fff; background: rgba(0,0,0,.35); padding: 6px 12px;
+          border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 14px; }
+  .pad { position: fixed; bottom: 18px; display: none; gap: 14px; }
+  .pad button { width: 72px; height: 72px; border-radius: 50%; border: 2px solid rgba(255,255,255,.6);
+                background: rgba(0,0,0,.3); color: #fff; font-size: 28px; touch-action: none; user-select: none; }
+  #padL { left: 18px; } #padR { right: 18px; }
+  @media (pointer: coarse) { .pad { display: flex; } }
+</style>
+</head>
+<body>
+<a id="back" href="index.html">← Hub</a>
+<canvas id="game" width="960" height="540"></canvas>
+<div class="pad" id="padL"><button data-k="left">◀</button><button data-k="right">▶</button></div>
+<div class="pad" id="padR"><button data-k="jump">⤒</button></div>
+<script>
+'use strict';
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height, T = 32;
+
+/* ---------------------------------------------------------------- levels */
+const LEVELS = [
+  { name: 'Green Meadow', sky: ['#7fd3ff', '#d9f3ff'], map: [
+    '                                                                                ',
+    '                                                                                ',
+    '                                                                                ',
+    '                                                                                ',
+    '                                                                                ',
+    '                                                                                ',
+    '                        o o o                                                   ',
+    '           o o         ======                                  o o              ',
+    '          =====                           o o          s      =====             ',
+    '                  ##                                #######                     ',
+    ' P                ##          s     ^^            #########  ^^^^^^         F   ',
+    '##########################################   ###################################',
+    '##########################################   ###################################',
+    '##########################################   ###################################',
+  ]},
+  { name: 'Spiky Caves', sky: ['#3b2a5c', '#8a5a9a'], map: [
+    '                                                                                          ',
+    '                                                                                          ',
+    '                                                                                          ',
+    '                                                                                          ',
+    '                                                                                          ',
+    '                                                                                          ',
+    '                         o  o                                         o                   ',
+    '               o o                     o       oo      o o                                ',
+    '              =====  m                ###     ====    =====      m                        ',
+    ' P              s                 s   ###                   s                   s      F  ',
+    '#######^^^^##########^^^^^^^^^^##############^^^^^^##############^^^^^^^^^^###############',
+    '##########################################################################################',
+    '##########################################################################################',
+    '##########################################################################################',
+  ]},
+  { name: 'Cloud Top', sky: ['#ff9a6b', '#ffe0a8'], map: [
+    '                                                                                               ',
+    '                                                                                               ',
+    '                                                                                               ',
+    '                                                                                               ',
+    '                                                                                               ',
+    '                                                o                oo                o           ',
+    '                                oo                        s     ====              ===       F  ',
+    '                          s    ====         m          ######          m                #######',
+    '         oo   m         ####          ====             ######                           #######',
+    ' P      ====            ####                           ######                           #######',
+    '#####^^^^^^^^^^^^^^^^^^^####^^^^^^^^^^^^^^^^^^^^^^^^^^^######^^^^^^^^^^^^^^^^^^^^^^^^^^^#######',
+    '###############################################################################################',
+    '###############################################################################################',
+    '###############################################################################################',
+  ]},
+];
+
+/* ---------------------------------------------------------------- input */
+const keys = { left: false, right: false, jump: false };
+let jumpPressedAt = -1;           // time of last jump press (for jump buffering)
+const KEYMAP = { ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right',
+                 Space: 'jump', ArrowUp: 'jump', KeyW: 'jump' };
+function press(k, down) {
+  if (k === 'jump' && down && !keys.jump) jumpPressedAt = now;
+  keys[k] = down;
+}
+addEventListener('keydown', e => {
+  if (KEYMAP[e.code]) { e.preventDefault(); press(KEYMAP[e.code], true); if (state !== 'play') advance(); }
+  else if (e.code === 'KeyR') loadLevel(levelIndex);
+  else if (e.code === 'Escape') location.href = 'index.html';
+  else if (e.code === 'Enter' && state !== 'play') advance();
+});
+addEventListener('keyup', e => { if (KEYMAP[e.code]) press(KEYMAP[e.code], false); });
+document.querySelectorAll('.pad button').forEach(b => {
+  const k = b.dataset.k;
+  b.addEventListener('pointerdown', e => { e.preventDefault(); press(k, true); if (state !== 'play') advance(); });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => b.addEventListener(ev, () => press(k, false)));
+});
+canvas.addEventListener('pointerdown', () => { if (state !== 'play') advance(); });
+
+/* ---------------------------------------------------------------- world */
+let grid, cols, rows, coins, slimes, player, flag, cam;
+let movers = [], particles = [];
+let levelIndex = 0, state = 'title', now = 0, levelTime = 0, totalCoins = 0, deaths = 0, stateAt = 0;
+
+function loadLevel(i) {
+  levelIndex = i;
+  const L = LEVELS[i];
+  rows = L.map.length; cols = Math.max(...L.map.map(r => r.length));
+  grid = []; coins = []; slimes = []; movers = []; particles = [];
+  for (let y = 0; y < rows; y++) {
+    grid.push([]);
+    for (let x = 0; x < cols; x++) {
+      const c = L.map[y][x] || ' ';
+      let cell = ' ';
+      if (c === '#' || c === '=' || c === '^') cell = c;
+      else if (c === 'o') coins.push({ x: x * T + T / 2, y: y * T + T / 2, taken: false });
+      else if (c === 's') slimes.push({ x: x * T + 4, y: y * T + 10, w: 24, h: 22, vx: -50, vy: 0, dead: 0 });
+      else if (c === 'm') movers.push({ x: x * T, y: y * T, w: T * 3, h: 12, ox: x * T, range: T * 4, t: Math.random() * 6, dx: 0 });
+      else if (c === 'P') player = makePlayer(x * T + 6, y * T + 4);
+      else if (c === 'F') flag = { x: x * T + 8, y: y * T - T * 2, w: 16, h: T * 3 };
+      grid[y].push(cell);
+    }
+  }
+  cam = { x: 0, y: rows * T - H };
+  levelTime = 0;
+  state = 'play';
+}
+const makePlayer = (x, y) => ({ x, y, w: 20, h: 28, vx: 0, vy: 0, onGround: false, lastGround: -1, face: 1, coins: 0, ride: null });
+
+const tileAt = (px, py) => {
+  const x = Math.floor(px / T), y = Math.floor(py / T);
+  if (x < 0 || x >= cols) return '#';
+  if (y < 0 || y >= rows) return ' ';
+  return grid[y][x];
+};
+const solid = c => c === '#';
+
+/* Moves a box along one axis and resolves tile collisions. */
+function moveBox(b, dx, dy) {
+  b.x += dx;
+  if (dx !== 0) {
+    const edge = dx > 0 ? b.x + b.w : b.x;
+    for (let yy = b.y + 1; yy < b.y + b.h - 1; yy += T / 2) {
+      if (solid(tileAt(edge, yy)) || solid(tileAt(edge, b.y + b.h - 1))) {
+        b.x = dx > 0 ? Math.floor(edge / T) * T - b.w - 0.01 : Math.floor(edge / T + 1) * T + 0.01;
+        b.vx = 0; b.hitWall = true; break;
+      }
+    }
+  }
+  const prevBottom = b.y + b.h;
+  b.y += dy;
+  b.onGround = false;
+  if (dy > 0) {
+    const bottom = b.y + b.h;
+    for (const xx of [b.x + 2, b.x + b.w - 2]) {
+      const c = tileAt(xx, bottom);
+      const top = Math.floor(bottom / T) * T;
+      if (solid(c) || (c === '=' && prevBottom <= top + 0.5)) {
+        b.y = top - b.h; b.vy = 0; b.onGround = true; break;
+      }
+    }
+  } else if (dy < 0) {
+    for (const xx of [b.x + 2, b.x + b.w - 2]) {
+      if (solid(tileAt(xx, b.y))) { b.y = Math.floor(b.y / T + 1) * T; b.vy = 0; break; }
+    }
+  }
+}
+
+const overlap = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+
+function burst(x, y, color, n = 10) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, s = 60 + Math.random() * 140;
+    particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 80, life: 0.6, color });
+  }
+}
+
+function die() {
+  if (state !== 'play') return;
+  deaths++;
+  burst(player.x + player.w / 2, player.y + player.h / 2, '#ff5a5a', 24);
+  state = 'dead'; stateAt = now;
+}
+
+/* ---------------------------------------------------------------- update */
+const GRAVITY = 1800, RUN = 230, ACCEL = 1800, FRICTION = 2000, JUMP = 640, COYOTE = 0.1, BUFFER = 0.12;
+
+function update(dt) {
+  for (const p of particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += GRAVITY * 0.5 * dt; p.life -= dt; }
+  particles = particles.filter(p => p.life > 0);
+  for (const m of movers) {
+    m.t += dt;
+    const nx = m.ox + (Math.sin(m.t * 1.1) * 0.5 + 0.5) * m.range;
+    m.dx = nx - m.x; m.x = nx;
+  }
+  if (state === 'dead' && now - stateAt > 1) loadLevel(levelIndex);
+  if (state !== 'play') return;
+  levelTime += dt;
+  const p = player;
+
+  // horizontal
+  const dir = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+  if (dir) { p.vx += dir * ACCEL * dt; p.face = dir; }
+  else { const f = FRICTION * dt; p.vx = Math.abs(p.vx) <= f ? 0 : p.vx - Math.sign(p.vx) * f; }
+  p.vx = Math.max(-RUN, Math.min(RUN, p.vx));
+
+  // jump with coyote time + input buffer, variable height
+  if (p.onGround || p.ride) p.lastGround = now;
+  if (now - jumpPressedAt < BUFFER && now - p.lastGround < COYOTE) {
+    p.vy = -JUMP; jumpPressedAt = -1; p.lastGround = -1; p.ride = null;
+  }
+  if (!keys.jump && p.vy < -200) p.vy = -200;
+  p.vy = Math.min(p.vy + GRAVITY * dt, 900);
+
+  // ride moving platform
+  const carry = p.ride ? p.ride.dx : 0;
+  const prevBottom = p.y + p.h;
+  moveBox(p, p.vx * dt + carry, p.vy * dt);
+  p.ride = null;
+  if (p.vy >= 0) for (const m of movers) {
+    if (p.x + p.w > m.x && p.x < m.x + m.w && prevBottom <= m.y + 1 && p.y + p.h >= m.y) {
+      p.y = m.y - p.h; p.vy = 0; p.onGround = true; p.ride = m;
+    }
+  }
+
+  // hazards
+  if (p.y > rows * T + 40) return die();
+  const feet = p.y + p.h - 2;          // spikes hurt in the lower half of their tile
+  for (const xx of [p.x + 4, p.x + p.w - 4])
+    if (tileAt(xx, feet) === '^' && feet - Math.floor(feet / T) * T > 14) return die();
+
+  // coins
+  for (const c of coins) if (!c.taken && Math.abs(c.x - (p.x + p.w / 2)) < 18 && Math.abs(c.y - (p.y + p.h / 2)) < 20) {
+    c.taken = true; p.coins++; burst(c.x, c.y, '#ffd84a', 8);
+  }
+
+  // slimes
+  for (const s of slimes) {
+    if (s.dead) { s.dead += dt; continue; }
+    s.hitWall = false;
+    s.vy = Math.min(s.vy + GRAVITY * dt, 900);
+    moveBox(s, s.vx * dt, s.vy * dt);
+    // turn at walls and ledges
+    const ahead = s.vx > 0 ? s.x + s.w + 2 : s.x - 2;
+    const ground = tileAt(ahead, s.y + s.h + 4);
+    if (s.hitWall || (s.onGround && ground !== '#' && ground !== '=')) s.vx = -s.vx;
+    if (overlap(p, s)) {
+      if (p.vy > 0 && prevBottom <= s.y + 10) {
+        s.dead = 0.001; p.vy = keys.jump ? -JUMP * 0.9 : -JUMP * 0.55;
+        burst(s.x + s.w / 2, s.y + s.h / 2, '#7ee07a', 14);
+      } else return die();
+    }
+  }
+  slimes = slimes.filter(s => !s.dead || s.dead < 0.4);
+
+  // goal
+  if (overlap(p, flag)) {
+    totalCoins += p.coins;
+    state = levelIndex === LEVELS.length - 1 ? 'won' : 'clear';
+    stateAt = now;
+    burst(flag.x, flag.y + 10, '#ffffff', 30);
+  }
+
+  // camera
+  const tx = Math.max(0, Math.min(cols * T - W, p.x + p.w / 2 - W / 2));
+  // levels shorter than the screen sit on its bottom edge, with sky above
+  const ty = rows * T <= H ? rows * T - H : Math.max(0, Math.min(rows * T - H, p.y + p.h / 2 - H / 2));
+  cam.x += (tx - cam.x) * Math.min(1, dt * 8);
+  cam.y += (ty - cam.y) * Math.min(1, dt * 8);
+}
+
+function advance() {
+  if (now - stateAt < 0.4) return;
+  if (state === 'title') { totalCoins = 0; deaths = 0; loadLevel(0); }
+  else if (state === 'clear') loadLevel(levelIndex + 1);
+  else if (state === 'won') { state = 'title'; stateAt = now; }
+}
+
+/* ---------------------------------------------------------------- draw */
+function draw() {
+  const L = LEVELS[state === 'title' ? 0 : levelIndex];
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, L.sky[0]); g.addColorStop(1, L.sky[1]);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+  // parallax hills
+  const cx = cam ? cam.x : now * 30;
+  ctx.fillStyle = 'rgba(255,255,255,.18)';
+  for (let i = -1; i < 8; i++) {
+    const hx = i * 220 - (cx * 0.3) % 220;
+    ctx.beginPath(); ctx.ellipse(hx, H - 40, 160, 120, 0, Math.PI, 0); ctx.fill();
+  }
+
+  if (state === 'title') return drawTitle();
+
+  ctx.save();
+  ctx.translate(-Math.round(cam.x), -Math.round(cam.y));
+  const x0 = Math.max(0, Math.floor(cam.x / T)), x1 = Math.min(cols, Math.ceil((cam.x + W) / T) + 1);
+  for (let y = 0; y < rows; y++) for (let x = x0; x < x1; x++) {
+    const c = grid[y][x], px = x * T, py = y * T;
+    if (c === '#') {
+      const top = y === 0 || grid[y - 1][x] !== '#';
+      ctx.fillStyle = '#8a5a34'; ctx.fillRect(px, py, T, T);
+      ctx.fillStyle = '#74492a'; ctx.fillRect(px + 4, py + 12, 6, 6); ctx.fillRect(px + 20, py + 22, 5, 5);
+      if (top) { ctx.fillStyle = '#4fbf4a'; ctx.fillRect(px, py, T, 9); ctx.fillStyle = '#3ea03a'; ctx.fillRect(px, py + 7, T, 3); }
+    } else if (c === '=') {
+      ctx.fillStyle = '#c98b4e'; ctx.fillRect(px, py, T, 10);
+      ctx.fillStyle = '#9c6534'; ctx.fillRect(px, py + 8, T, 3); ctx.fillRect(px + 3, py + 10, 4, 6); ctx.fillRect(px + T - 7, py + 10, 4, 6);
+    } else if (c === '^') {
+      ctx.fillStyle = '#d6dde6';
+      for (let k = 0; k < 4; k++) {
+        ctx.beginPath(); ctx.moveTo(px + k * 8, py + T); ctx.lineTo(px + k * 8 + 4, py + 16); ctx.lineTo(px + k * 8 + 8, py + T); ctx.fill();
+      }
+    }
+  }
+  for (const m of movers) {
+    ctx.fillStyle = '#6d7fa8'; ctx.fillRect(m.x, m.y, m.w, m.h);
+    ctx.fillStyle = '#a9b8da'; ctx.fillRect(m.x, m.y, m.w, 4);
+  }
+  // coins
+  for (const c of coins) if (!c.taken) {
+    const sx = Math.abs(Math.cos(now * 4 + c.x * 0.05)) * 9 + 1;
+    ctx.fillStyle = '#ffd84a'; ctx.beginPath(); ctx.ellipse(c.x, c.y + Math.sin(now * 3 + c.x) * 2, sx, 10, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#e8a91e'; ctx.fillRect(c.x - 1, c.y - 5, 2, 10);
+  }
+  // flag
+  ctx.fillStyle = '#eee'; ctx.fillRect(flag.x, flag.y, 4, flag.h);
+  ctx.fillStyle = '#ff4f6d';
+  ctx.beginPath(); ctx.moveTo(flag.x + 4, flag.y + 2);
+  ctx.lineTo(flag.x + 34 + Math.sin(now * 6) * 3, flag.y + 14); ctx.lineTo(flag.x + 4, flag.y + 26); ctx.fill();
+  // slimes
+  for (const s of slimes) {
+    const squash = s.dead ? 0.3 : 1 + Math.sin(now * 10 + s.x) * 0.08;
+    const h = s.h * squash, y = s.y + s.h - h;
+    ctx.fillStyle = s.dead ? '#5a9e57' : '#6fd36a';
+    ctx.beginPath(); ctx.roundRect(s.x, y, s.w, h, [10, 10, 3, 3]); ctx.fill();
+    if (!s.dead) {
+      const ex = s.vx > 0 ? 3 : -3;
+      ctx.fillStyle = '#fff'; ctx.fillRect(s.x + 6 + ex, y + 5, 5, 6); ctx.fillRect(s.x + 14 + ex, y + 5, 5, 6);
+      ctx.fillStyle = '#123'; ctx.fillRect(s.x + 8 + ex, y + 7, 2, 3); ctx.fillRect(s.x + 16 + ex, y + 7, 2, 3);
+    }
+  }
+  if (state !== 'dead') drawPlayer(player);
+  for (const p of particles) { ctx.globalAlpha = Math.max(0, p.life / 0.6); ctx.fillStyle = p.color; ctx.fillRect(p.x - 3, p.y - 3, 6, 6); }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  // HUD
+  ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(W - 340, 10, 330, 34);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 18px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillText(`${levelIndex + 1}. ${L.name}`, W - 330, 27);
+  ctx.textAlign = 'right';
+  ctx.fillText(`● ${player.coins}/${coins.length}   ${levelTime.toFixed(1)}s`, W - 20, 27);
+
+  if (state === 'clear') banner('Level clear!', `${player.coins}/${coins.length} coins · ${levelTime.toFixed(1)}s`, 'Press Space for the next level');
+  if (state === 'won') banner('You made it to the top! 🏁', `${totalCoins} coins in total · ${deaths} falls`, 'Press Space to play again');
+}
+
+function drawPlayer(p) {
+  const run = Math.abs(p.vx) > 20 && p.onGround ? Math.sin(now * 20) : 0;
+  ctx.save();
+  ctx.translate(p.x + p.w / 2, p.y + p.h);
+  ctx.scale(p.face, 1);
+  // legs
+  ctx.fillStyle = '#2b3a67';
+  ctx.fillRect(-8 + run * 3, -9, 6, 9); ctx.fillRect(2 - run * 3, -9, 6, 9);
+  // body
+  ctx.fillStyle = '#ff7a3d'; ctx.beginPath(); ctx.roundRect(-10, -26, 20, 19, 5); ctx.fill();
+  // head + eye
+  ctx.fillStyle = '#ffd9b3'; ctx.beginPath(); ctx.arc(1, -30, 8, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#222'; ctx.fillRect(4, -32, 2.5, 3);
+  // cap
+  ctx.fillStyle = '#3a7bd5'; ctx.fillRect(-8, -38, 16, 5); ctx.fillRect(2, -35, 10, 3);
+  ctx.restore();
+}
+
+function banner(title, sub, hint) {
+  ctx.fillStyle = 'rgba(10,15,35,.6)'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff';
+  ctx.font = 'bold 48px system-ui'; ctx.fillText(title, W / 2, H / 2 - 40);
+  ctx.font = '22px system-ui'; ctx.fillText(sub, W / 2, H / 2 + 10);
+  ctx.globalAlpha = 0.6 + Math.sin(now * 4) * 0.4;
+  ctx.font = 'bold 18px system-ui'; ctx.fillText(hint, W / 2, H / 2 + 60);
+  ctx.globalAlpha = 1;
+}
+
+function drawTitle() {
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#1d2b55'; ctx.font = 'bold 72px system-ui'; ctx.fillText('Hop Hop Hill', W / 2, H / 2 - 90);
+  ctx.font = '22px system-ui';
+  ctx.fillText('Run, jump, grab the coins, stomp the slimes and reach the flag.', W / 2, H / 2 - 20);
+  ctx.fillText('← → / A D to run  ·  Space / ↑ to jump (hold to jump higher)  ·  R to restart', W / 2, H / 2 + 16);
+  ctx.globalAlpha = 0.6 + Math.sin(now * 4) * 0.4;
+  ctx.font = 'bold 26px system-ui'; ctx.fillText('Press Space or tap to start', W / 2, H / 2 + 80);
+  ctx.globalAlpha = 1;
+  ctx.save(); ctx.translate(W / 2 - 10, H / 2 + 170 + Math.min(0, Math.sin(now * 5) * 30));
+  drawPlayer({ x: 0, y: -28, w: 20, h: 28, vx: 0, onGround: false, face: 1 });
+  ctx.restore();
+}
+
+/* ---------------------------------------------------------------- loop */
+let last = performance.now();
+function frame(t) {
+  const dt = Math.max(0, Math.min(0.033, (t - last) / 1000)); last = t; now += dt;
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

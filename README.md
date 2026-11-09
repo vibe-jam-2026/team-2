@@ -14,6 +14,7 @@ The hub is the main menu: an arcade lobby of tiny one-button survival games. Eve
 | 2 | 🏒 Ice Brawl | The fighting game: a 1v1 hockey fight against a bot. When a red **!** appears over your opponent, tap to duck the punch and counter. Tapping at the wrong time makes you wobble and lose balance. Watch out for fakes and combos later on. |
 | 3 | 🐿️ Slapshot Squirrels | Two-player artillery on its own page (`slapshot-squirrels.html`). Not part of the survival score. |
 | 4 | 🥊 Ice Brawl Pro | The harder, skill-based Ice Brawl. A duck only lasts a split second, so tap just before the punch lands; the last 0.08s is a **PERFECT** dodge. A yellow **!** is a fast jab, a red **!** is a haymaker, which can freeze mid-swing to bait you, or a fake where the arm stops short and a quick jab follows. After a dodge the bot is open: tap to counter. Counters drain its stamina bar; a knockdown heals you and starts a tougher round. Dodge streaks boost your counters, and pink pips warn of combo punches. |
+| 5 | 🏃 Hop Hop Hill | A simple platformer on its own page (`platformer.html`). Run with ← → / A D, jump with Space / ↑ (hold to jump higher). Grab coins, stomp slimes, avoid spikes and reach the flag in three levels. Not part of the survival score. |
 
 ### Adding a game
 
