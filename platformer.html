@@ -7,7 +7,8 @@
 <!--
   HOP HOP HILL
   A simple side-scrolling platformer. Run, jump, grab coins, stomp the
-  slimes, avoid the spikes and reach the flag. Three levels.
+  enemies, avoid the spikes, beat the boss at the end of each level and
+  reach the flag. Three levels.
 
   Controls: ← → / A D to run, Space / ↑ / W to jump (hold for a higher
   jump), R to restart the level, Esc to go back to the hub.
@@ -19,14 +20,18 @@
   Levels are plain text maps in LEVELS below. Legend:
     #  ground block          =  one-way platform (jump up through it)
     ^  spikes                o  coin
-    s  slime (walks, stomp it from above)
+    s  slime   (walks, stomp it)
+    j  hopper  (jumps at you, stomp it)
+    b  bat     (flies back and forth, stomp it)
+    k  spiky beetle (walks, can NOT be stomped: jump over it)
     m  moving platform (slides left/right)
+    B  the level's boss      G  gate that opens when the boss is beaten
     P  player start          F  goal flag
 -->
 <style>
   html, body { margin: 0; height: 100%; background: #10172a; overflow: hidden; touch-action: none; }
   body { display: flex; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
-  canvas { display: block; max-width: 100vw; max-height: 100vh; box-shadow: 0 0 40px rgba(0,0,0,.5); image-rendering: pixelated; }
+  canvas { display: block; max-width: 100vw; max-height: 100vh; box-shadow: 0 0 40px rgba(0,0,0,.5); }
   #back { position: fixed; top: 10px; left: 10px; color: #fff; background: rgba(0,0,0,.35); padding: 6px 12px;
           border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 14px; }
   .pad { position: fixed; bottom: 18px; display: none; gap: 14px; }
@@ -49,55 +54,62 @@ const W = canvas.width, H = canvas.height, T = 32;
 
 /* ---------------------------------------------------------------- levels */
 const LEVELS = [
-  { name: 'Green Meadow', sky: ['#7fd3ff', '#d9f3ff'], map: [
-    '                                                                                ',
-    '                                                                                ',
-    '                                                                                ',
-    '                                                                                ',
-    '                                                                                ',
-    '                                                                                ',
-    '                        o o o                                                   ',
-    '           o o         ======                                  o o              ',
-    '          =====                           o o          s      =====             ',
-    '                  ##                                #######                     ',
-    ' P                ##          s     ^^            #########  ^^^^^^         F   ',
-    '##########################################   ###################################',
-    '##########################################   ###################################',
-    '##########################################   ###################################',
+  { name: 'Green Meadow', sky: ['#7fd3ff', '#d9f3ff'], boss: 'king', map: [
+    '                                                                                                            ',
+    '                                                                                                            ',
+    '                                                                                                            ',
+    '                                                                                                     GG     ',
+    '                          b                                                                          GG     ',
+    '                                                                b                                    GG     ',
+    '                        o o o                                                                        GG     ',
+    '           o o         ======                                  o o                                   GG     ',
+    '          =====                           o o          s      =====                                  GG     ',
+    '                  ##                                #######                                          GG     ',
+    ' P      s         ##          s     ^^         j  #########  ^^^^^^   s    j                   B     GG  F  ',
+    '##########################################   ###############################################################',
+    '##########################################   ###############################################################',
+    '##########################################   ###############################################################',
   ]},
-  { name: 'Spiky Caves', sky: ['#3b2a5c', '#8a5a9a'], map: [
-    '                                                                                          ',
-    '                                                                                          ',
-    '                                                                                          ',
-    '                                                                                          ',
-    '                                                                                          ',
-    '                                                                                          ',
-    '                         o  o                                         o                   ',
-    '               o o                     o       oo      o o                                ',
-    '              =====  m                ###     ====    =====      m                        ',
-    ' P              s                 s   ###                   s                   s      F  ',
-    '#######^^^^##########^^^^^^^^^^##############^^^^^^##############^^^^^^^^^^###############',
-    '##########################################################################################',
-    '##########################################################################################',
-    '##########################################################################################',
+  { name: 'Spiky Caves', sky: ['#3b2a5c', '#8a5a9a'], boss: 'beetle', map: [
+    '                                                                                                                      ',
+    '                                                                                                                      ',
+    '                                                                                                               GG     ',
+    '                                                                                                               GG     ',
+    '                                                                       b                                       GG     ',
+    '                          b                     b                                                              GG     ',
+    '                         o  o                                         o                                        GG     ',
+    '               o o                     o       oo      o o                                                     GG     ',
+    '              =====  m                ###     ====    =====      m                                             GG     ',
+    ' P              s  k              s   ###  k         j      s  k                s   j  k                  B    GG  F  ',
+    '#######^^^^##########^^^^^^^^^^##############^^^^^^##############^^^^^^^^^^###########################################',
+    '######################################################################################################################',
+    '######################################################################################################################',
+    '######################################################################################################################',
   ]},
-  { name: 'Cloud Top', sky: ['#ff9a6b', '#ffe0a8'], map: [
-    '                                                                                               ',
-    '                                                                                               ',
-    '                                                                                               ',
-    '                                                                                               ',
-    '                                                                                               ',
-    '                                                o                oo                o           ',
-    '                                oo                        s     ====              ===       F  ',
-    '                          s    ====         m          ######          m                #######',
-    '         oo   m         ####          ====             ######                           #######',
-    ' P      ====            ####                           ######                           #######',
-    '#####^^^^^^^^^^^^^^^^^^^####^^^^^^^^^^^^^^^^^^^^^^^^^^^######^^^^^^^^^^^^^^^^^^^^^^^^^^^#######',
-    '###############################################################################################',
-    '###############################################################################################',
-    '###############################################################################################',
+  { name: 'Cloud Top', sky: ['#ff9a6b', '#ffe0a8'], boss: 'queen', map: [
+    '                                                                                                                      GG      ',
+    '                                                                                                                      GG      ',
+    '                                                                                                                      GG      ',
+    '                                                  b                  b          b                                     GG      ',
+    '                                    b                                                                                 GG      ',
+    '                 b                              o                oo                o                                  GG      ',
+    '                                oo                        k     ====              ===      j s                B       GG  F   ',
+    '                          s    ====         m          ######          m                ######################################',
+    '         oo   m         ####          ====             ######                           ######################################',
+    ' P      ====            ####                           ######                           ######################################',
+    '#####^^^^^^^^^^^^^^^^^^^####^^^^^^^^^^^^^^^^^^^^^^^^^^^######^^^^^^^^^^^^^^^^^^^^^^^^^^^######################################',
+    '##############################################################################################################################',
+    '##############################################################################################################################',
+    '##############################################################################################################################',
   ]},
 ];
+
+/* Boss settings per type. Stomp the boss on the head to hurt it. */
+const BOSSES = {
+  king:   { name: 'King Slime',  hp: 3, w: 84, h: 66, color: '#4fcf5a' },  // walks after you and jumps
+  beetle: { name: 'Cave Beetle', hp: 3, w: 92, h: 52, color: '#5b3f8c' },  // charges; stomp it only while it is dizzy
+  queen:  { name: 'Slime Queen', hp: 4, w: 88, h: 74, color: '#e255b8' },  // hops after you and spits fireballs
+};
 
 /* ---------------------------------------------------------------- input */
 const keys = { left: false, right: false, jump: false };
@@ -110,7 +122,7 @@ function press(k, down) {
 }
 addEventListener('keydown', e => {
   if (KEYMAP[e.code]) { e.preventDefault(); press(KEYMAP[e.code], true); if (state !== 'play') advance(); }
-  else if (e.code === 'KeyR') loadLevel(levelIndex);
+  else if (e.code === 'KeyR' && state !== 'title') loadLevel(levelIndex);
   else if (e.code === 'Escape') location.href = 'index.html';
   else if (e.code === 'Enter' && state !== 'play') advance();
 });
@@ -123,34 +135,57 @@ document.querySelectorAll('.pad button').forEach(b => {
 canvas.addEventListener('pointerdown', () => { if (state !== 'play') advance(); });
 
 /* ---------------------------------------------------------------- world */
-let grid, cols, rows, coins, slimes, player, flag, cam;
-let movers = [], particles = [];
-let levelIndex = 0, state = 'title', now = 0, levelTime = 0, totalCoins = 0, deaths = 0, stateAt = 0;
+let grid, cols, rows, coins, enemies, player, flag, cam, boss;
+let movers = [], particles = [], shots = [];
+let levelIndex = 0, state = 'title', now = 0, levelTime = 0, totalCoins = 0, deaths = 0, stateAt = 0, shake = 0;
+let gateClosed = true;
+
+const PW = 26, PH = 42;            // player hitbox (the player is drawn 1.5x the old size)
+
+function makeEnemy(type, x, y) {
+  const S = { slime: [28, 24], hopper: [26, 24], bat: [30, 18], beetle: [32, 24] }[type];
+  return { type, x: x + (T - S[0]) / 2, y: y + T - S[1], w: S[0], h: S[1], vx: type === 'beetle' ? -70 : -55, vy: 0,
+           ox: x, oy: y + 6, t: Math.random() * 3, dead: 0, face: -1 };
+}
 
 function loadLevel(i) {
   levelIndex = i;
   const L = LEVELS[i];
   rows = L.map.length; cols = Math.max(...L.map.map(r => r.length));
-  grid = []; coins = []; slimes = []; movers = []; particles = [];
+  grid = []; coins = []; enemies = []; movers = []; particles = []; shots = []; boss = null; gateClosed = true;
   for (let y = 0; y < rows; y++) {
     grid.push([]);
     for (let x = 0; x < cols; x++) {
-      const c = L.map[y][x] || ' ';
+      const c = L.map[y][x] || ' ', px = x * T, py = y * T;
       let cell = ' ';
-      if (c === '#' || c === '=' || c === '^') cell = c;
-      else if (c === 'o') coins.push({ x: x * T + T / 2, y: y * T + T / 2, taken: false });
-      else if (c === 's') slimes.push({ x: x * T + 4, y: y * T + 10, w: 24, h: 22, vx: -50, vy: 0, dead: 0 });
-      else if (c === 'm') movers.push({ x: x * T, y: y * T, w: T * 3, h: 12, ox: x * T, range: T * 4, t: Math.random() * 6, dx: 0 });
-      else if (c === 'P') player = makePlayer(x * T + 6, y * T + 4);
-      else if (c === 'F') flag = { x: x * T + 8, y: y * T - T * 2, w: 16, h: T * 3 };
+      if ('#=^G'.includes(c)) cell = c;
+      else if (c === 'o') coins.push({ x: px + T / 2, y: py + T / 2, taken: false });
+      else if (c === 's') enemies.push(makeEnemy('slime', px, py));
+      else if (c === 'j') enemies.push(makeEnemy('hopper', px, py));
+      else if (c === 'b') enemies.push(makeEnemy('bat', px, py));
+      else if (c === 'k') enemies.push(makeEnemy('beetle', px, py));
+      else if (c === 'm') movers.push({ x: px, y: py, w: T * 3, h: 12, ox: px, range: T * 4, t: Math.random() * 6, dx: 0 });
+      else if (c === 'P') player = { x: px + 3, y: py + T - PH, w: PW, h: PH, vx: 0, vy: 0, onGround: false, lastGround: -1, face: 1, coins: 0, ride: null };
+      else if (c === 'F') flag = { x: px + 8, y: py - T * 2, w: 16, h: T * 3 };
+      else if (c === 'B') boss = makeBoss(L.boss, px, py);
       grid[y].push(cell);
     }
+  }
+  if (boss) {   // the arena runs from 13 tiles left of the boss to the gate
+    let gx = boss.x; while (gx < cols * T && tileAt(gx, boss.y + boss.h - 4) !== 'G') gx += T;
+    boss.maxX = Math.floor(gx / T) * T; boss.minX = boss.maxX - 20 * T;
   }
   cam = { x: 0, y: rows * T - H };
   levelTime = 0;
   state = 'play';
 }
-const makePlayer = (x, y) => ({ x, y, w: 20, h: 28, vx: 0, vy: 0, onGround: false, lastGround: -1, face: 1, coins: 0, ride: null });
+
+function makeBoss(type, px, py) {
+  const d = BOSSES[type];
+  return { type, name: d.name, color: d.color, hp: d.hp, maxHp: d.hp, w: d.w, h: d.h,
+           x: px + T / 2 - d.w / 2, y: py + T - d.h, vx: 0, vy: 0, face: -1, onGround: false,
+           mode: 'sleep', t: 0, inv: 0, dead: 0, hops: 0 };
+}
 
 const tileAt = (px, py) => {
   const x = Math.floor(px / T), y = Math.floor(py / T);
@@ -158,10 +193,11 @@ const tileAt = (px, py) => {
   if (y < 0 || y >= rows) return ' ';
   return grid[y][x];
 };
-const solid = c => c === '#';
+const solid = c => c === '#' || (c === 'G' && gateClosed);
 
-/* Moves a box along one axis and resolves tile collisions. */
+/* Moves a box along each axis and resolves tile collisions. */
 function moveBox(b, dx, dy) {
+  b.hitWall = false;
   b.x += dx;
   if (dx !== 0) {
     const edge = dx > 0 ? b.x + b.w : b.x;
@@ -175,9 +211,10 @@ function moveBox(b, dx, dy) {
   const prevBottom = b.y + b.h;
   b.y += dy;
   b.onGround = false;
+  const xs = []; for (let xx = b.x + 2; xx < b.x + b.w - 2; xx += T / 2) xs.push(xx); xs.push(b.x + b.w - 2);
   if (dy > 0) {
     const bottom = b.y + b.h;
-    for (const xx of [b.x + 2, b.x + b.w - 2]) {
+    for (const xx of xs) {
       const c = tileAt(xx, bottom);
       const top = Math.floor(bottom / T) * T;
       if (solid(c) || (c === '=' && prevBottom <= top + 0.5)) {
@@ -185,17 +222,17 @@ function moveBox(b, dx, dy) {
       }
     }
   } else if (dy < 0) {
-    for (const xx of [b.x + 2, b.x + b.w - 2]) {
+    for (const xx of xs) {
       if (solid(tileAt(xx, b.y))) { b.y = Math.floor(b.y / T + 1) * T; b.vy = 0; break; }
     }
   }
 }
 
-const overlap = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+const overlap = (a, b, pad = 0) => a.x + pad < b.x + b.w && a.x + a.w - pad > b.x && a.y + pad < b.y + b.h && a.y + a.h - pad > b.y;
 
-function burst(x, y, color, n = 10) {
+function burst(x, y, color, n = 10, speed = 140) {
   for (let i = 0; i < n; i++) {
-    const a = Math.random() * Math.PI * 2, s = 60 + Math.random() * 140;
+    const a = Math.random() * Math.PI * 2, s = 60 + Math.random() * speed;
     particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 80, life: 0.6, color });
   }
 }
@@ -203,22 +240,24 @@ function burst(x, y, color, n = 10) {
 function die() {
   if (state !== 'play') return;
   deaths++;
-  burst(player.x + player.w / 2, player.y + player.h / 2, '#ff5a5a', 24);
+  burst(player.x + player.w / 2, player.y + player.h / 2, '#ff5a5a', 28);
+  shake = 0.3;
   state = 'dead'; stateAt = now;
 }
 
 /* ---------------------------------------------------------------- update */
-const GRAVITY = 1800, RUN = 230, ACCEL = 1800, FRICTION = 2000, JUMP = 640, COYOTE = 0.1, BUFFER = 0.12;
+const GRAVITY = 1800, RUN = 240, ACCEL = 1900, FRICTION = 2000, JUMP = 660, COYOTE = 0.1, BUFFER = 0.12;
 
 function update(dt) {
   for (const p of particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += GRAVITY * 0.5 * dt; p.life -= dt; }
   particles = particles.filter(p => p.life > 0);
+  shake = Math.max(0, shake - dt);
   for (const m of movers) {
     m.t += dt;
     const nx = m.ox + (Math.sin(m.t * 1.1) * 0.5 + 0.5) * m.range;
     m.dx = nx - m.x; m.x = nx;
   }
-  if (state === 'dead' && now - stateAt > 1) loadLevel(levelIndex);
+  if (state === 'dead' && now - stateAt > 1.1) loadLevel(levelIndex);
   if (state !== 'play') return;
   levelTime += dt;
   const p = player;
@@ -234,7 +273,7 @@ function update(dt) {
   if (now - jumpPressedAt < BUFFER && now - p.lastGround < COYOTE) {
     p.vy = -JUMP; jumpPressedAt = -1; p.lastGround = -1; p.ride = null;
   }
-  if (!keys.jump && p.vy < -200) p.vy = -200;
+  if (!keys.jump && p.vy < -220) p.vy = -220;
   p.vy = Math.min(p.vy + GRAVITY * dt, 900);
 
   // ride moving platform
@@ -251,35 +290,49 @@ function update(dt) {
   // hazards
   if (p.y > rows * T + 40) return die();
   const feet = p.y + p.h - 2;          // spikes hurt in the lower half of their tile
-  for (const xx of [p.x + 4, p.x + p.w - 4])
+  for (const xx of [p.x + 5, p.x + p.w - 5])
     if (tileAt(xx, feet) === '^' && feet - Math.floor(feet / T) * T > 14) return die();
 
   // coins
-  for (const c of coins) if (!c.taken && Math.abs(c.x - (p.x + p.w / 2)) < 18 && Math.abs(c.y - (p.y + p.h / 2)) < 20) {
+  for (const c of coins) if (!c.taken && Math.abs(c.x - (p.x + p.w / 2)) < p.w / 2 + 10 && Math.abs(c.y - (p.y + p.h / 2)) < p.h / 2 + 8) {
     c.taken = true; p.coins++; burst(c.x, c.y, '#ffd84a', 8);
   }
 
-  // slimes
-  for (const s of slimes) {
-    if (s.dead) { s.dead += dt; continue; }
-    s.hitWall = false;
-    s.vy = Math.min(s.vy + GRAVITY * dt, 900);
-    moveBox(s, s.vx * dt, s.vy * dt);
-    // turn at walls and ledges
-    const ahead = s.vx > 0 ? s.x + s.w + 2 : s.x - 2;
-    const ground = tileAt(ahead, s.y + s.h + 4);
-    if (s.hitWall || (s.onGround && ground !== '#' && ground !== '=')) s.vx = -s.vx;
-    if (overlap(p, s)) {
-      if (p.vy > 0 && prevBottom <= s.y + 10) {
-        s.dead = 0.001; p.vy = keys.jump ? -JUMP * 0.9 : -JUMP * 0.55;
-        burst(s.x + s.w / 2, s.y + s.h / 2, '#7ee07a', 14);
+  // stomp: falling onto the top part of something
+  const stomps = e => p.vy > 0 && prevBottom <= e.y + Math.max(12, e.h * 0.35);
+  const bounce = () => { p.vy = keys.jump ? -JUMP * 0.95 : -JUMP * 0.6; };
+
+  // enemies
+  for (const e of enemies) {
+    if (e.dead) { e.dead += dt; continue; }
+    updateEnemy(e, dt);
+    if (overlap(p, e, 3)) {
+      if (e.type !== 'beetle' && stomps(e)) {
+        e.dead = 0.001; bounce();
+        burst(e.x + e.w / 2, e.y + e.h / 2, e.type === 'bat' ? '#b48cff' : '#7ee07a', 14);
       } else return die();
     }
   }
-  slimes = slimes.filter(s => !s.dead || s.dead < 0.4);
+  enemies = enemies.filter(e => (!e.dead || e.dead < 0.4) && e.y < rows * T + 100);
 
-  // goal
-  if (overlap(p, flag)) {
+  // boss + its fireballs
+  if (boss && !boss.dead) {
+    updateBoss(boss, dt);
+    if (boss.inv <= 0 && overlap(p, boss, 6)) {
+      const canHurt = boss.type !== 'beetle' || boss.mode === 'dizzy';
+      if (canHurt && stomps(boss)) hitBoss();
+      else return die();
+    }
+  } else if (boss && boss.dead) boss.dead += dt;
+  for (const s of shots) {
+    s.vy += GRAVITY * 0.55 * dt; s.x += s.vx * dt; s.y += s.vy * dt; s.life -= dt;
+    if (solid(tileAt(s.x, s.y)) || s.life <= 0) { s.life = 0; burst(s.x, s.y, '#ff9a3c', 5, 60); }
+    else if (Math.abs(s.x - (p.x + p.w / 2)) < p.w / 2 + 5 && Math.abs(s.y - (p.y + p.h / 2)) < p.h / 2 + 5) return die();
+  }
+  shots = shots.filter(s => s.life > 0);
+
+  // goal (behind the gate, so only after the boss is beaten)
+  if (!gateClosed && overlap(p, flag)) {
     totalCoins += p.coins;
     state = levelIndex === LEVELS.length - 1 ? 'won' : 'clear';
     stateAt = now;
@@ -292,6 +345,103 @@ function update(dt) {
   const ty = rows * T <= H ? rows * T - H : Math.max(0, Math.min(rows * T - H, p.y + p.h / 2 - H / 2));
   cam.x += (tx - cam.x) * Math.min(1, dt * 8);
   cam.y += (ty - cam.y) * Math.min(1, dt * 8);
+}
+
+function updateEnemy(e, dt) {
+  e.t += dt;
+  if (e.type === 'bat') {                       // flies in a wave, ignores walls
+    const s = Math.sin(e.t * 1.3);
+    e.face = Math.cos(e.t * 1.3) > 0 ? 1 : -1;
+    e.x = e.ox + s * T * 2.5; e.y = e.oy + Math.sin(e.t * 4) * 12;
+    return;
+  }
+  e.vy = Math.min(e.vy + GRAVITY * dt, 900);
+  if (e.type === 'hopper') {                    // sits still, then jumps toward the player
+    if (e.onGround) {
+      e.vx = 0;
+      if (e.t > 1.3 && Math.abs(player.x - e.x) < 8 * T) {
+        e.t = 0; e.vy = -560; e.face = player.x < e.x ? -1 : 1; e.vx = e.face * 110;
+      }
+    }
+    moveBox(e, e.vx * dt, e.vy * dt);
+    return;
+  }
+  // slime / beetle: walk, turn at walls and ledges
+  moveBox(e, e.vx * dt, e.vy * dt);
+  const sp = e.type === 'beetle' ? 70 : 55;
+  if (e.vx === 0) e.vx = -e.face * sp;          // was stopped by a wall: turn
+  e.face = Math.sign(e.vx);
+  const ahead = e.vx > 0 ? e.x + e.w + 2 : e.x - 2;
+  const ground = tileAt(ahead, e.y + e.h + 4);
+  if (e.onGround && ground !== '#' && ground !== '=') { e.vx = -e.vx; e.face = -e.face; }
+}
+
+function updateBoss(b, dt) {
+  const p = player;
+  b.inv = Math.max(0, b.inv - dt);
+  b.t += dt;
+  const toward = p.x + p.w / 2 < b.x + b.w / 2 ? -1 : 1;
+  const rage = b.maxHp - b.hp;                  // gets faster as it gets hurt
+  if (b.mode === 'sleep') {
+    if (p.x > b.minX - T) { b.mode = b.type === 'beetle' ? 'aim' : 'walk'; b.t = 0; shake = 0.4; }
+  } else if (b.type === 'king') {
+    if (b.onGround) {
+      b.face = toward; b.vx = toward * (70 + rage * 30);
+      if (b.t > 2.1 - rage * 0.35) { b.t = 0; b.vy = -620; b.vx = toward * 170; }
+    }
+  } else if (b.type === 'beetle') {
+    if (b.mode === 'aim') {                     // shakes, then charges
+      b.vx = 0; b.face = toward;
+      if (b.t > 0.9 - rage * 0.2) { b.mode = 'charge'; b.t = 0; }
+    } else if (b.mode === 'charge') {
+      b.vx = b.face * (330 + rage * 50);
+    } else if (b.mode === 'dizzy') {            // flipped on its back: stomp it now!
+      b.vx = 0;
+      if (b.t > 2.2 - rage * 0.3) { b.mode = 'aim'; b.t = 0; }
+    }
+  } else if (b.type === 'queen') {
+    if (b.onGround) {
+      b.vx = 0; b.face = toward;
+      if (b.t > 1.2 - rage * 0.15) {
+        b.t = 0; b.hops++;
+        if (b.hops % 3 === 0) spit(b, toward, 3 + Math.min(2, rage));
+        else { b.vy = -600; b.vx = toward * (150 + rage * 30); }
+      }
+    }
+  }
+  b.vy = Math.min(b.vy + GRAVITY * dt, 900);
+  const wasAir = !b.onGround;
+  moveBox(b, b.vx * dt, b.vy * dt);
+  if (wasAir && b.onGround && b.type !== 'beetle') { shake = 0.15; burst(b.x + b.w / 2, b.y + b.h, '#ffffff', 6, 60); }
+  // stay inside the arena; the beetle gets dizzy when it hits a wall
+  let hit = b.hitWall;
+  if (b.x < b.minX) { b.x = b.minX; hit = true; }
+  if (b.x + b.w > b.maxX) { b.x = b.maxX - b.w; hit = true; }
+  if (hit && b.type === 'beetle' && b.mode === 'charge') {
+    b.mode = 'dizzy'; b.t = 0; shake = 0.35; burst(b.x + (b.face > 0 ? b.w : 0), b.y + b.h / 2, '#ffe066', 12);
+  }
+}
+
+function spit(b, dir, n) {
+  for (let i = 0; i < n; i++) {
+    shots.push({ x: b.x + b.w / 2 + dir * b.w * 0.4, y: b.y + b.h * 0.35,
+                 vx: dir * (140 + i * 75), vy: -380 - i * 40, life: 3 });
+  }
+  shake = 0.1;
+}
+
+function hitBoss() {
+  const b = boss;
+  b.hp--; b.inv = 1.0; shake = 0.3;
+  player.vy = -JUMP * 0.85;
+  burst(b.x + b.w / 2, b.y + 10, '#ffffff', 18);
+  if (b.type === 'beetle') { b.mode = 'aim'; b.t = -0.4; }
+  else { b.vx = -b.face * 220; b.vy = -250; }
+  if (b.hp <= 0) {
+    b.dead = 0.001; gateClosed = false; shots = []; shake = 0.6;
+    burst(b.x + b.w / 2, b.y + b.h / 2, b.color, 50, 260);
+    burst(b.x + b.w / 2, b.y + b.h / 2, '#ffd84a', 30, 220);
+  }
 }
 
 function advance() {
@@ -319,8 +469,9 @@ function draw() {
   if (state === 'title') return drawTitle();
 
   ctx.save();
-  ctx.translate(-Math.round(cam.x), -Math.round(cam.y));
-  const x0 = Math.max(0, Math.floor(cam.x / T)), x1 = Math.min(cols, Math.ceil((cam.x + W) / T) + 1);
+  const sx = shake > 0 ? (Math.random() - 0.5) * 12 * shake / 0.3 : 0, sy = shake > 0 ? (Math.random() - 0.5) * 12 * shake / 0.3 : 0;
+  ctx.translate(-Math.round(cam.x + sx), -Math.round(cam.y + sy));
+  const x0 = Math.max(0, Math.floor(cam.x / T) - 1), x1 = Math.min(cols, Math.ceil((cam.x + W) / T) + 1);
   for (let y = 0; y < rows; y++) for (let x = x0; x < x1; x++) {
     const c = grid[y][x], px = x * T, py = y * T;
     if (c === '#') {
@@ -336,6 +487,16 @@ function draw() {
       for (let k = 0; k < 4; k++) {
         ctx.beginPath(); ctx.moveTo(px + k * 8, py + T); ctx.lineTo(px + k * 8 + 4, py + 16); ctx.lineTo(px + k * 8 + 8, py + T); ctx.fill();
       }
+    } else if (c === 'G') {
+      // the gate slides into the ground once the boss is beaten
+      const open = boss && boss.dead ? Math.min(1, boss.dead / 1.2) : 0;
+      if (open < 1) {
+        ctx.save(); ctx.beginPath(); ctx.rect(px, py, T, T); ctx.clip();
+        const oy = open * T * 8;
+        ctx.fillStyle = '#4a5368'; ctx.fillRect(px, py + oy, T, T);
+        ctx.fillStyle = '#7b879f'; ctx.fillRect(px + 4, py + oy, 6, T); ctx.fillRect(px + 20, py + oy, 6, T);
+        ctx.restore();
+      }
     }
   }
   for (const m of movers) {
@@ -344,8 +505,8 @@ function draw() {
   }
   // coins
   for (const c of coins) if (!c.taken) {
-    const sx = Math.abs(Math.cos(now * 4 + c.x * 0.05)) * 9 + 1;
-    ctx.fillStyle = '#ffd84a'; ctx.beginPath(); ctx.ellipse(c.x, c.y + Math.sin(now * 3 + c.x) * 2, sx, 10, 0, 0, Math.PI * 2); ctx.fill();
+    const cw = Math.abs(Math.cos(now * 4 + c.x * 0.05)) * 9 + 1;
+    ctx.fillStyle = '#ffd84a'; ctx.beginPath(); ctx.ellipse(c.x, c.y + Math.sin(now * 3 + c.x) * 2, cw, 10, 0, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = '#e8a91e'; ctx.fillRect(c.x - 1, c.y - 5, 2, 10);
   }
   // flag
@@ -353,17 +514,12 @@ function draw() {
   ctx.fillStyle = '#ff4f6d';
   ctx.beginPath(); ctx.moveTo(flag.x + 4, flag.y + 2);
   ctx.lineTo(flag.x + 34 + Math.sin(now * 6) * 3, flag.y + 14); ctx.lineTo(flag.x + 4, flag.y + 26); ctx.fill();
-  // slimes
-  for (const s of slimes) {
-    const squash = s.dead ? 0.3 : 1 + Math.sin(now * 10 + s.x) * 0.08;
-    const h = s.h * squash, y = s.y + s.h - h;
-    ctx.fillStyle = s.dead ? '#5a9e57' : '#6fd36a';
-    ctx.beginPath(); ctx.roundRect(s.x, y, s.w, h, [10, 10, 3, 3]); ctx.fill();
-    if (!s.dead) {
-      const ex = s.vx > 0 ? 3 : -3;
-      ctx.fillStyle = '#fff'; ctx.fillRect(s.x + 6 + ex, y + 5, 5, 6); ctx.fillRect(s.x + 14 + ex, y + 5, 5, 6);
-      ctx.fillStyle = '#123'; ctx.fillRect(s.x + 8 + ex, y + 7, 2, 3); ctx.fillRect(s.x + 16 + ex, y + 7, 2, 3);
-    }
+
+  for (const e of enemies) drawEnemy(e);
+  if (boss && (!boss.dead || boss.dead < 0.5)) drawBoss(boss);
+  for (const s of shots) {
+    ctx.fillStyle = '#ff7a1a'; ctx.beginPath(); ctx.arc(s.x, s.y, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#ffe066'; ctx.beginPath(); ctx.arc(s.x, s.y, 4.5, 0, Math.PI * 2); ctx.fill();
   }
   if (state !== 'dead') drawPlayer(player);
   for (const p of particles) { ctx.globalAlpha = Math.max(0, p.life / 0.6); ctx.fillStyle = p.color; ctx.fillRect(p.x - 3, p.y - 3, 6, 6); }
@@ -376,26 +532,138 @@ function draw() {
   ctx.fillText(`${levelIndex + 1}. ${L.name}`, W - 330, 27);
   ctx.textAlign = 'right';
   ctx.fillText(`● ${player.coins}/${coins.length}   ${levelTime.toFixed(1)}s`, W - 20, 27);
+  if (boss && boss.mode !== 'sleep' && !boss.dead) drawBossBar(boss);
+  if (boss && boss.dead && boss.dead < 2.5) {
+    ctx.textAlign = 'center'; ctx.font = 'bold 34px system-ui'; ctx.fillStyle = '#fff';
+    ctx.strokeStyle = 'rgba(0,0,0,.5)'; ctx.lineWidth = 5;
+    ctx.strokeText(`${boss.name} defeated! The gate is open`, W / 2, 110); ctx.fillText(`${boss.name} defeated! The gate is open`, W / 2, 110);
+  }
 
   if (state === 'clear') banner('Level clear!', `${player.coins}/${coins.length} coins · ${levelTime.toFixed(1)}s`, 'Press Space for the next level');
   if (state === 'won') banner('You made it to the top! 🏁', `${totalCoins} coins in total · ${deaths} falls`, 'Press Space to play again');
+}
+
+function drawBossBar(b) {
+  const bw = 360, bx = W / 2 - bw / 2, by = 62;
+  ctx.textAlign = 'center'; ctx.font = 'bold 18px system-ui'; ctx.fillStyle = '#fff';
+  ctx.strokeStyle = 'rgba(0,0,0,.5)'; ctx.lineWidth = 4;
+  ctx.strokeText(b.name, W / 2, by - 14); ctx.fillText(b.name, W / 2, by - 14);
+  ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(bx - 3, by - 3, bw + 6, 20);
+  for (let i = 0; i < b.maxHp; i++) {
+    const seg = bw / b.maxHp;
+    ctx.fillStyle = i < b.hp ? '#ff4f6d' : 'rgba(255,255,255,.15)';
+    ctx.fillRect(bx + i * seg + 2, by, seg - 4, 14);
+  }
+}
+
+function drawEnemy(e) {
+  const squash = e.dead ? 0.3 : 1;
+  ctx.save();
+  if (e.dead) ctx.globalAlpha = 1 - e.dead / 0.4;
+  if (e.type === 'slime' || e.type === 'hopper') {
+    const wob = e.dead ? 0 : Math.sin(now * 10 + e.ox) * 0.08;
+    const h = e.h * (squash + wob), y = e.y + e.h - h;
+    ctx.fillStyle = e.type === 'slime' ? '#6fd36a' : '#3fb8e0';
+    ctx.beginPath(); ctx.roundRect(e.x, y, e.w, h, [12, 12, 3, 3]); ctx.fill();
+    if (e.type === 'hopper') { ctx.fillStyle = '#2a8fb5'; ctx.fillRect(e.x - 2, e.y + e.h - 6, 8, 6); ctx.fillRect(e.x + e.w - 6, e.y + e.h - 6, 8, 6); }
+    if (!e.dead) eyes(e.x + e.w / 2, y + 9, e.face);
+  } else if (e.type === 'bat') {
+    const flap = Math.sin(now * 18 + e.ox) * 8;
+    ctx.fillStyle = '#6b4ea8';
+    ctx.beginPath(); ctx.moveTo(e.x + e.w / 2, e.y + 8); ctx.lineTo(e.x - 8, e.y + flap); ctx.lineTo(e.x + 4, e.y + 14); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(e.x + e.w / 2, e.y + 8); ctx.lineTo(e.x + e.w + 8, e.y + flap); ctx.lineTo(e.x + e.w - 4, e.y + 14); ctx.fill();
+    ctx.fillStyle = '#8a6cc8'; ctx.beginPath(); ctx.ellipse(e.x + e.w / 2, e.y + e.h / 2, 11, e.h / 2 * squash, 0, 0, Math.PI * 2); ctx.fill();
+    if (!e.dead) eyes(e.x + e.w / 2, e.y + 6, e.face, '#ffe066');
+  } else if (e.type === 'beetle') {
+    const cxm = e.x + e.w / 2, base = e.y + e.h;
+    ctx.fillStyle = '#c23b3b';
+    for (let k = 0; k < 4; k++) {           // spikes on the shell: don't stomp!
+      const sx = e.x + 4 + k * 8;
+      ctx.beginPath(); ctx.moveTo(sx, base - 14); ctx.lineTo(sx + 4, e.y - 6); ctx.lineTo(sx + 8, base - 14); ctx.fill();
+    }
+    ctx.fillStyle = '#7a2b4a'; ctx.beginPath(); ctx.ellipse(cxm, base - 8, e.w / 2, 14, 0, Math.PI, 0); ctx.fill();
+    ctx.fillRect(e.x, base - 8, e.w, 4);
+    ctx.fillStyle = '#2b1a24'; ctx.fillRect(e.x + 4 + Math.sin(now * 16) * 2, base - 4, 5, 4); ctx.fillRect(e.x + e.w - 9 - Math.sin(now * 16) * 2, base - 4, 5, 4);
+    eyes(cxm + e.face * 10, base - 12, e.face);
+  }
+  ctx.restore();
+}
+
+function eyes(x, y, face, white = '#fff') {
+  const ex = face * 3;
+  ctx.fillStyle = white; ctx.fillRect(x - 8 + ex, y - 4, 6, 7); ctx.fillRect(x + 2 + ex, y - 4, 6, 7);
+  ctx.fillStyle = '#123'; ctx.fillRect(x - 6 + ex + face, y - 2, 3, 4); ctx.fillRect(x + 4 + ex + face, y - 2, 3, 4);
+}
+
+function drawBoss(b) {
+  ctx.save();
+  if (b.dead) ctx.globalAlpha = 1 - b.dead / 0.5;
+  if (b.inv > 0 && Math.floor(now * 16) % 2) ctx.globalAlpha = 0.35;
+  const cx = b.x + b.w / 2, base = b.y + b.h;
+  if (b.type === 'king' || b.type === 'queen') {
+    const wob = Math.sin(now * 6) * 0.05 + (b.onGround ? 0 : -0.08);
+    const h = b.h * (1 + wob), w = b.w * (1 - wob);
+    ctx.fillStyle = b.color;
+    ctx.beginPath(); ctx.roundRect(cx - w / 2, base - h, w, h, [36, 36, 8, 8]); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.beginPath(); ctx.ellipse(cx - w * 0.22, base - h * 0.72, 9, 14, -0.4, 0, Math.PI * 2); ctx.fill();
+    // face
+    const ex = b.face * 8, ey = base - h * 0.55;
+    ctx.fillStyle = '#fff'; ctx.fillRect(cx - 22 + ex, ey - 9, 14, 16); ctx.fillRect(cx + 8 + ex, ey - 9, 14, 16);
+    ctx.fillStyle = '#1a1030'; ctx.fillRect(cx - 17 + ex + b.face * 2, ey - 4, 7, 9); ctx.fillRect(cx + 13 + ex + b.face * 2, ey - 4, 7, 9);
+    ctx.fillStyle = '#1a1030'; ctx.fillRect(cx - 24 + ex, ey - 14, 16, 4); ctx.fillRect(cx + 8 + ex, ey - 14, 16, 4); // angry brows
+    ctx.fillStyle = '#2a1030'; ctx.fillRect(cx - 10 + ex, ey + 14, 20, 5);
+    // crown / tiara
+    const top = base - h - 2;
+    ctx.fillStyle = '#ffd84a';
+    ctx.beginPath(); ctx.moveTo(cx - 24, top + 6); ctx.lineTo(cx - 24, top - 16); ctx.lineTo(cx - 12, top - 4); ctx.lineTo(cx, top - 20);
+    ctx.lineTo(cx + 12, top - 4); ctx.lineTo(cx + 24, top - 16); ctx.lineTo(cx + 24, top + 6); ctx.fill();
+    ctx.fillStyle = b.type === 'queen' ? '#5ad1ff' : '#ff4f6d'; ctx.beginPath(); ctx.arc(cx, top - 4, 4, 0, Math.PI * 2); ctx.fill();
+  } else if (b.type === 'beetle') {
+    const dizzy = b.mode === 'dizzy';
+    const shakeX = b.mode === 'aim' ? Math.sin(now * 60) * 2 : 0;
+    ctx.translate(cx + shakeX, base - b.h / 2 - (dizzy ? 12 : 0));
+    if (dizzy) ctx.scale(1, -1);                 // flipped on its back
+    ctx.scale(b.face, 1);
+    // spikes (only dangerous when not dizzy)
+    ctx.fillStyle = '#c23b3b';
+    for (let k = -3; k <= 3; k++) {
+      ctx.beginPath(); ctx.moveTo(k * 12 - 6, -b.h / 2 + 12); ctx.lineTo(k * 12, -b.h / 2 - 14); ctx.lineTo(k * 12 + 6, -b.h / 2 + 12); ctx.fill();
+    }
+    ctx.fillStyle = b.color; ctx.beginPath(); ctx.ellipse(0, 6, b.w / 2, b.h / 2 + 4, 0, Math.PI, 0); ctx.fill();
+    ctx.fillRect(-b.w / 2, 4, b.w, 8);
+    ctx.fillStyle = '#2b1a24';
+    for (let k = -1; k <= 1; k++) ctx.fillRect(k * 26 - 4 + Math.sin(now * 20 + k) * (b.mode === 'charge' ? 4 : 1), 12, 8, 12);
+    // head with horn
+    ctx.fillStyle = '#3d2a5e'; ctx.beginPath(); ctx.arc(b.w / 2 - 6, 2, 16, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#e8e0c8'; ctx.beginPath(); ctx.moveTo(b.w / 2 + 4, -4); ctx.lineTo(b.w / 2 + 26, -14); ctx.lineTo(b.w / 2 + 8, 6); ctx.fill();
+    ctx.fillStyle = b.mode === 'charge' ? '#ff4f4f' : '#fff'; ctx.fillRect(b.w / 2 - 2, -6, 7, 7);
+    ctx.restore(); ctx.save();                    // back to world coordinates
+    if (dizzy) {                                  // stars over a dizzy beetle
+      ctx.fillStyle = '#ffe066'; ctx.font = 'bold 20px system-ui'; ctx.textAlign = 'center';
+      for (let k = 0; k < 3; k++) {
+        const a = now * 5 + k * 2.1;
+        ctx.fillText('★', cx + Math.cos(a) * 30, b.y - 6 + Math.sin(a) * 8);
+      }
+    }
+  }
+  ctx.restore();
 }
 
 function drawPlayer(p) {
   const run = Math.abs(p.vx) > 20 && p.onGround ? Math.sin(now * 20) : 0;
   ctx.save();
   ctx.translate(p.x + p.w / 2, p.y + p.h);
-  ctx.scale(p.face, 1);
+  ctx.scale(p.face * 1.5, 1.5);                  // drawn 1.5x bigger than the original sprite
   // legs
   ctx.fillStyle = '#2b3a67';
   ctx.fillRect(-8 + run * 3, -9, 6, 9); ctx.fillRect(2 - run * 3, -9, 6, 9);
   // body
-  ctx.fillStyle = '#ff7a3d'; ctx.beginPath(); ctx.roundRect(-10, -26, 20, 19, 5); ctx.fill();
+  ctx.fillStyle = '#ff7a3d'; ctx.beginPath(); ctx.roundRect(-10, -24, 20, 17, 5); ctx.fill();
   // head + eye
-  ctx.fillStyle = '#ffd9b3'; ctx.beginPath(); ctx.arc(1, -30, 8, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#222'; ctx.fillRect(4, -32, 2.5, 3);
+  ctx.fillStyle = '#ffd9b3'; ctx.beginPath(); ctx.arc(1, -26, 7, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#222'; ctx.fillRect(4, -28, 2.5, 3);
   // cap
-  ctx.fillStyle = '#3a7bd5'; ctx.fillRect(-8, -38, 16, 5); ctx.fillRect(2, -35, 10, 3);
+  ctx.fillStyle = '#3a7bd5'; ctx.fillRect(-7, -33, 15, 5); ctx.fillRect(2, -30, 9, 3);
   ctx.restore();
 }
 
@@ -411,16 +679,15 @@ function banner(title, sub, hint) {
 
 function drawTitle() {
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#1d2b55'; ctx.font = 'bold 72px system-ui'; ctx.fillText('Hop Hop Hill', W / 2, H / 2 - 90);
-  ctx.font = '22px system-ui';
-  ctx.fillText('Run, jump, grab the coins, stomp the slimes and reach the flag.', W / 2, H / 2 - 20);
-  ctx.fillText('← → / A D to run  ·  Space / ↑ to jump (hold to jump higher)  ·  R to restart', W / 2, H / 2 + 16);
+  ctx.fillStyle = '#1d2b55'; ctx.font = 'bold 72px system-ui'; ctx.fillText('Hop Hop Hill', W / 2, H / 2 - 110);
+  ctx.font = '21px system-ui';
+  ctx.fillText('Run, jump, grab the coins and stomp the enemies. Jump over the spiky beetles!', W / 2, H / 2 - 40);
+  ctx.fillText('Beat the boss at the end of each level to open the gate to the flag.', W / 2, H / 2 - 10);
+  ctx.fillText('← → / A D to run  ·  Space / ↑ to jump (hold to jump higher)  ·  R to restart', W / 2, H / 2 + 22);
   ctx.globalAlpha = 0.6 + Math.sin(now * 4) * 0.4;
   ctx.font = 'bold 26px system-ui'; ctx.fillText('Press Space or tap to start', W / 2, H / 2 + 80);
   ctx.globalAlpha = 1;
-  ctx.save(); ctx.translate(W / 2 - 10, H / 2 + 170 + Math.min(0, Math.sin(now * 5) * 30));
-  drawPlayer({ x: 0, y: -28, w: 20, h: 28, vx: 0, onGround: false, face: 1 });
-  ctx.restore();
+  drawPlayer({ x: W / 2 - PW / 2, y: H / 2 + 190 - PH + Math.min(0, Math.sin(now * 5) * 30), w: PW, h: PH, vx: 0, onGround: false, face: 1 });
 }
 
 /* ---------------------------------------------------------------- loop */
