@@ -10,6 +10,9 @@
   Two hockey-helmeted squirrels on two islands slap exploding pucks at
   each other. Whatever you do: DO NOT touch the red button.
 
+  Modes: 2 players on one keyboard (hot-seat), or play Red against a
+  computer-controlled Blue on Easy, Normal or Hard (see AI_LEVELS).
+
   Single self-contained file: HTML + CSS + JavaScript (Canvas API).
   No external libraries or assets. Open it in any modern desktop browser.
 -->
@@ -79,6 +82,21 @@ const CONFIG = {
   BUTTON_X: 640,
   BUTTON_Y: 520,            // y of the top of the button housing (dome sits on top)
   BUTTON_RADIUS: 18,
+};
+
+/*
+ * AI difficulty levels (the computer always plays Blue).
+ * The AI predicts where shots land using the real puck physics, picks the
+ * shot that lands closest to its opponent, then adds human-like mistakes:
+ *   windAwareness: how much of the wind the AI accounts for (0 = ignores it, 1 = exact)
+ *   angleError / powerError: typical aiming mistake in degrees / percent
+ *   maxWalk: the AI walks a random distance up to this (px) before aiming
+ *   thinkTime: pause (s) before it starts adjusting its aim
+ */
+const AI_LEVELS = {
+  easy:   { label: 'Easy',   windAwareness: 0,    angleError: 6,   powerError: 6,   maxWalk: 30, thinkTime: 1.0 },
+  normal: { label: 'Normal', windAwareness: 0.7,  angleError: 2.5, powerError: 2.5, maxWalk: 60, thinkTime: 0.8 },
+  hard:   { label: 'Hard',   windAwareness: 1,    angleError: 1.3, powerError: 1.3, maxWalk: 80, thinkTime: 0.6 },
 };
 
 const W = CONFIG.WIDTH;
@@ -306,7 +324,22 @@ let clouds = [];
 const keys = {};
 const mouse = { x: -100, y: -100 };
 
+// Game modes offered on the title screen
+const MENU = [
+  { label: '2 Players (same keyboard)', ai: false },
+  { label: 'vs Computer: Easy',   ai: true, difficulty: 'easy' },
+  { label: 'vs Computer: Normal', ai: true, difficulty: 'normal' },
+  { label: 'vs Computer: Hard',   ai: true, difficulty: 'hard' },
+];
+let menuIndex = 0;
+let gameMode = MENU[0];
+
+// The AI's plan for the current turn
+const ai = { wait: 0, dir: 1, walkLeft: 0, targetAim: 45, targetPower: 50, aimed: false };
+
 const active = () => players[current];
+const isAI = p => gameMode.ai && p.index === 1;
+const displayName = p => (isAI(p) ? `${p.name} (AI)` : p.name);
 
 /* ======================================================================
  * 6. GAME FLOW
@@ -367,7 +400,15 @@ function beginTurn() {
   walkAccum = 0;
   for (const p of players) p.swingT = -1;
   const p = active();
-  showBanner(`${p.name}'s turn`, p.color);
+  showBanner(`${displayName(p)}'s turn`, p.color);
+  if (isAI(p)) aiBeginTurn(p);
+}
+
+/** Title-screen menu choice: start a game in that mode. */
+function startMode(index) {
+  menuIndex = index;
+  gameMode = MENU[index];
+  newGame(true);
 }
 
 function nextTurn() {
@@ -384,6 +425,7 @@ function nextTurn() {
 function startAiming() {
   state = 'aim';
   updateFacingFromAim(active());
+  if (isAI(active())) aiPlanShot(active());
 }
 
 /** Space pressed: begin the swing. The puck is launched mid-swing. */
@@ -426,13 +468,16 @@ function showGameOver() {
 function defeatMessage(p) {
   switch (p.defeat) {
     case 'button':
-      return buttonEvent && buttonEvent.how === 'click'
-        ? `${p.name} clicked the red button during their own turn!`
-        : `${p.name} hit the red button with a puck!`;
+      if (buttonEvent && buttonEvent.how === 'click') {
+        return gameMode.ai
+          ? `${displayName(p)} clicked the red button!`
+          : `${p.name} clicked the red button during their own turn!`;
+      }
+      return `${displayName(p)} hit the red button with a puck!`;
     case 'water':
-      return `${p.name} fell into the water.`;
+      return `${displayName(p)} fell into the water.`;
     default:
-      return `${p.name} ran out of health.`;
+      return `${displayName(p)} ran out of health.`;
   }
 }
 
@@ -505,7 +550,9 @@ function updateMovePhase(dt) {
   p.walking = false;
   if (!p.grounded || p.defeat) return;
 
-  const dir = (keys.ArrowRight ? 1 : 0) - (keys.ArrowLeft ? 1 : 0);
+  const dir = isAI(p)
+    ? aiMoveDirection(p, dt)
+    : (keys.ArrowRight ? 1 : 0) - (keys.ArrowLeft ? 1 : 0);
   if (dir === 0 || moveLeft <= 0) { walkAccum = 0; return; }
 
   p.facing = dir;
@@ -514,6 +561,10 @@ function updateMovePhase(dt) {
   walkAccum += CONFIG.WALK_SPEED * dt;
   while (walkAccum >= 1 && moveLeft > 0) {
     walkAccum -= 1;
+    if (isAI(p)) {                     // the AI never walks off a ledge
+      if (ai.walkLeft <= 0 || !safeToStep(p, dir)) { ai.walkLeft = 0; break; }
+      ai.walkLeft--;
+    }
     if (!stepPlayer(p, dir)) { walkAccum = 0; p.walking = false; break; }
     moveLeft -= 1;
     if (!p.grounded) break;           // walked off a ledge
@@ -524,11 +575,11 @@ function updateMovePhase(dt) {
  * 8. AIMING, SHOOTING AND THE PUCK
  * ====================================================================== */
 
-/** Unit vector of the current aim (angle is measured toward the opponent). */
-function aimVector(p) {
+/** Unit vector of an aim angle (measured toward the opponent); defaults to the player's aim. */
+function aimVector(p, aim = p.aim) {
   const opp = players[1 - p.index];
   const toward = Math.sign(opp.x - p.x) || (p.index === 0 ? 1 : -1);
-  const a = p.aim * Math.PI / 180;
+  const a = aim * Math.PI / 180;
   return { x: Math.cos(a) * toward, y: -Math.sin(a) };
 }
 
@@ -539,6 +590,7 @@ function updateFacingFromAim(p) {
 
 function updateAimPhase(dt) {
   const p = active();
+  if (isAI(p)) { aiAim(p, dt); return; }
   const angleDir = (keys.ArrowUp ? 1 : 0) - (keys.ArrowDown ? 1 : 0);
   const powerDir = (keys.ArrowRight ? 1 : 0) - (keys.ArrowLeft ? 1 : 0);
   p.aim = clamp(p.aim + angleDir * CONFIG.AIM_SPEED * dt, 0, 180);
@@ -552,18 +604,35 @@ function updateSwingPhase() {
   if (p.swingT >= SWING_IMPACT) launchPuck(p);
 }
 
+// The puck moves in fixed time steps (max ~2 px each) so it never tunnels
+// through anything, and so the AI's predictions match real shots exactly.
+const PUCK_STEP = 1 / 480;
+
+/** Start position and velocity of a puck shot with the given aim and power. */
+function launchState(p, aim, power) {
+  const d = aimVector(p, aim);
+  const speed = CONFIG.MAX_SHOT_SPEED * power / 100;
+  return { x: p.x + d.x * 20, y: p.y - 18 + d.y * 20, vx: d.x * speed, vy: d.y * speed, age: 0 };
+}
+
+/** Advances a puck (or a simulated one) by one fixed step. */
+function stepPuckPhysics(b, windAccel) {
+  b.vx += windAccel * PUCK_STEP;
+  b.vy += CONFIG.GRAVITY * PUCK_STEP;
+  b.x += b.vx * PUCK_STEP;
+  b.y += b.vy * PUCK_STEP;
+  b.age += PUCK_STEP;
+}
+
 function launchPuck(p) {
+  const s = launchState(p, p.aim, p.power);
   const d = aimVector(p);
-  const speed = CONFIG.MAX_SHOT_SPEED * p.power / 100;
   puck = {
-    x: p.x + d.x * 20,
-    y: p.y - 18 + d.y * 20,
-    vx: d.x * speed,
-    vy: d.y * speed,
+    ...s,
     rot: 0,
-    spin: (d.x >= 0 ? 1 : -1) * (6 + speed / 60),
+    spin: (d.x >= 0 ? 1 : -1) * (6 + Math.hypot(s.vx, s.vy) / 60),
     owner: p,
-    age: 0,
+    timeAcc: 0,
     trail: [],
   };
   state = 'flight';
@@ -574,18 +643,15 @@ function launchPuck(p) {
   }
 }
 
-/** Moves the puck in small sub-steps so it never tunnels through anything. */
+/** Moves the puck through this frame's fixed steps, stopping at the first hit. */
 function updatePuck(dt) {
   if (!puck) return;
-  const steps = Math.max(1, Math.ceil(Math.hypot(puck.vx, puck.vy) * dt / 2));
-  const h = dt / steps;
-  for (let i = 0; i < steps; i++) {
-    puck.vx += wind * h;
-    puck.vy += CONFIG.GRAVITY * h;
-    puck.x += puck.vx * h;
-    puck.y += puck.vy * h;
-    puck.age += h;
-    if (checkPuckCollision()) return;
+  puck.timeAcc += dt;
+  while (puck.timeAcc >= PUCK_STEP) {
+    puck.timeAcc -= PUCK_STEP;
+    stepPuckPhysics(puck, wind);
+    const hit = puckHitTest(puck.x, puck.y, puck.owner, puck.age);
+    if (hit) { resolvePuckHit(hit); return; }
   }
   puck.rot += puck.spin * dt;
   puck.trail.push({ x: puck.x, y: puck.y });
@@ -611,50 +677,55 @@ function touchesButton(x, y, r) {
   return onDome || onHousing;
 }
 
-/** Checks everything the puck can hit. Returns true if the flight ended. */
-function checkPuckCollision() {
-  const { x, y, owner } = puck;
-
-  // 1. The red button: a direct hit means the shooter loses
-  if (touchesButton(x, y, PUCK_RADIUS)) {
-    triggerButton(owner, 'puck');
-    return true;
-  }
-  // 2. The button's post: an ordinary obstacle
-  if (x > BUTTON.postX0 - PUCK_RADIUS && x < BUTTON.postX1 + PUCK_RADIUS && y > BUTTON.housingY1) {
-    explode(x, y);
-    return true;
-  }
-  // 3. Squirrels (the shooter is ignored for a moment so the puck can leave the stick)
+/**
+ * What would a puck at (x, y) hit? Has no side effects, so the AI can use it too.
+ * Returns 'button' | 'post' | 'player' | 'terrain' | 'water' | 'out' | null.
+ */
+function puckHitTest(x, y, owner, age) {
+  // The red button itself (a direct hit means the shooter loses)
+  if (touchesButton(x, y, PUCK_RADIUS)) return 'button';
+  // The button's post: an ordinary obstacle
+  if (x > BUTTON.postX0 - PUCK_RADIUS && x < BUTTON.postX1 + PUCK_RADIUS && y > BUTTON.housingY1) return 'post';
+  // Squirrels (the shooter is ignored for a moment so the puck can leave the stick)
   for (const p of players) {
     if (p.inWater) continue;
-    if (p === owner && puck.age < 0.2) continue;
+    if (p === owner && age < 0.2) continue;
     if (x > p.x - PLAYER_HALF_W - PUCK_RADIUS && x < p.x + PLAYER_HALF_W + PUCK_RADIUS &&
-        y > p.y - PLAYER_HEIGHT - PUCK_RADIUS && y < p.y + PUCK_RADIUS) {
+        y > p.y - PLAYER_HEIGHT - PUCK_RADIUS && y < p.y + PUCK_RADIUS) return 'player';
+  }
+  if (isSolid(x, y) || isSolid(x + 4, y) || isSolid(x - 4, y) || isSolid(x, y + 4) || isSolid(x, y - 4)) return 'terrain';
+  if (y >= CONFIG.WATER_Y) return 'water';
+  if (x < -400 || x > W + 400) return 'out';
+  return null;
+}
+
+/** Ends the real puck's flight according to what it hit. */
+function resolvePuckHit(hit) {
+  const { x, y, owner } = puck;
+  switch (hit) {
+    case 'button':
+      triggerButton(owner, 'puck');
+      break;
+    case 'water':                       // harmless splash
+      spawnSplash(x, CONFIG.WATER_Y, 22);
+      floatTexts.push({ x, y: CONFIG.WATER_Y - 30, text: 'Splash!', color: '#ffffff', life: 1.2 });
+      puck = null;
+      enterSettle();
+      break;
+    case 'out':                         // flew far off the side of the screen
+      puck = null;
+      enterSettle();
+      break;
+    default:                            // post, player or terrain
       explode(x, y);
-      return true;
-    }
   }
-  // 4. Terrain
-  if (isSolid(x, y) || isSolid(x + 4, y) || isSolid(x - 4, y) || isSolid(x, y + 4) || isSolid(x, y - 4)) {
-    explode(x, y);
-    return true;
-  }
-  // 5. Water: harmless splash
-  if (y >= CONFIG.WATER_Y) {
-    spawnSplash(x, CONFIG.WATER_Y, 22);
-    floatTexts.push({ x, y: CONFIG.WATER_Y - 30, text: 'Splash!', color: '#ffffff', life: 1.2 });
-    puck = null;
-    enterSettle();
-    return true;
-  }
-  // 6. Far off the side of the screen
-  if (x < -400 || x > W + 400) {
-    puck = null;
-    enterSettle();
-    return true;
-  }
-  return false;
+}
+
+/** Distance from (x, y) to the closest point of a squirrel's body. */
+function distanceToBody(p, x, y) {
+  const cx = clamp(x, p.x - PLAYER_HALF_W, p.x + PLAYER_HALF_W);
+  const cy = clamp(y, p.y - PLAYER_HEIGHT, p.y);
+  return Math.hypot(x - cx, y - cy);
 }
 
 /** Explosion: crater, distance-based damage, effects. */
@@ -664,10 +735,7 @@ function explode(x, y) {
 
   for (const p of players) {
     if (p.inWater) continue;
-    // Distance from the blast to the closest point of the squirrel's body
-    const cx = clamp(x, p.x - PLAYER_HALF_W, p.x + PLAYER_HALF_W);
-    const cy = clamp(y, p.y - PLAYER_HEIGHT, p.y);
-    const d = Math.hypot(x - cx, y - cy);
+    const d = distanceToBody(p, x, y);
     if (d >= CONFIG.DAMAGE_RADIUS) continue;
     const dmg = Math.round(CONFIG.MAX_DAMAGE * (1 - d / CONFIG.DAMAGE_RADIUS));
     if (dmg <= 0) continue;
@@ -679,6 +747,98 @@ function explode(x, y) {
   spawnExplosion(x, y);
   shake = 10;
   enterSettle();
+}
+
+/* ======================================================================
+ * 8b. AI OPPONENT
+ *    Moves a little, then tries every angle/power combination with the
+ *    real puck physics, keeps the shot that lands nearest the opponent
+ *    (never one that hits the red button or lands next to itself),
+ *    adds mistakes based on difficulty, and turns its aim toward it.
+ * ====================================================================== */
+
+/** Roughly normally distributed random number (mean 0, std dev ~1). */
+function gaussian() {
+  return (Math.random() + Math.random() + Math.random() - 1.5) * 2;
+}
+
+/** Moves a value toward a target by at most maxStep. */
+function approach(value, target, maxStep) {
+  return Math.abs(target - value) <= maxStep ? target : value + Math.sign(target - value) * maxStep;
+}
+
+/** True if walking a few pixels in this direction keeps the squirrel safely on the ground. */
+function safeToStep(p, dir) {
+  const probe = { x: p.x, y: p.y, grounded: true, vy: 0 };
+  for (let i = 0; i < 14; i++) {          // look a little ahead for ledges
+    if (!stepPlayer(probe, dir) || !probe.grounded) return false;
+  }
+  return probe.y < CONFIG.WATER_Y - 20;
+}
+
+function aiBeginTurn(p) {
+  const level = AI_LEVELS[gameMode.difficulty];
+  ai.wait = 0.7;
+  ai.dir = Math.random() < 0.5 ? -1 : 1;
+  if (!safeToStep(p, ai.dir)) ai.dir = -ai.dir;
+  ai.walkLeft = randInt(0, level.maxWalk);
+}
+
+/** Movement phase for the AI: returns the direction to walk (0 = standing still). */
+function aiMoveDirection(p, dt) {
+  if (ai.wait > 0) { ai.wait -= dt; return 0; }
+  if (ai.walkLeft > 0 && moveLeft > 0 && safeToStep(p, ai.dir)) return ai.dir;
+  startAiming();
+  return 0;
+}
+
+/** Predicts where a shot lands. Returns { type, x, y } like puckHitTest. */
+function simulateShot(p, aim, power, windAccel) {
+  const b = launchState(p, aim, power);
+  for (let i = 0; i < 8 / PUCK_STEP; i++) {
+    stepPuckPhysics(b, windAccel);
+    const hit = puckHitTest(b.x, b.y, p, b.age);
+    if (hit) return { type: hit, x: b.x, y: b.y };
+  }
+  return { type: 'out', x: b.x, y: b.y };
+}
+
+/** Chooses the AI's target angle and power for this turn. */
+function aiPlanShot(p) {
+  const level = AI_LEVELS[gameMode.difficulty];
+  const opp = players[1 - p.index];
+  const believedWind = wind * level.windAwareness;
+  let best = null;
+
+  for (let aim = 8; aim <= 86; aim += 2) {
+    for (let power = 16; power <= 100; power += 2) {
+      const r = simulateShot(p, aim, power, believedWind);
+      if (r.type === 'button') continue;                                       // never on purpose!
+      if (distanceToBody(p, r.x, r.y) < CONFIG.DAMAGE_RADIUS + 10) continue;   // don't blow itself up
+      let score = distanceToBody(opp, r.x, r.y);
+      if (r.type === 'water' || r.type === 'out' || r.type === 'post') score += 300;   // harmless shots
+      if (!best || score < best.score) best = { aim, power, score };
+    }
+  }
+  if (!best) best = { aim: 60, power: 70 };
+
+  ai.targetAim = clamp(best.aim + gaussian() * level.angleError, 0, 180);
+  ai.targetPower = clamp(best.power + gaussian() * level.powerError, 5, 100);
+  ai.wait = level.thinkTime;
+  ai.aimed = false;
+}
+
+/** Aiming phase for the AI: turn the aim toward the target, pause, shoot. */
+function aiAim(p, dt) {
+  if (ai.wait > 0) { ai.wait -= dt; return; }
+  if (ai.aimed) { shoot(); return; }
+  p.aim = approach(p.aim, ai.targetAim, CONFIG.AIM_SPEED * dt);
+  p.power = approach(p.power, ai.targetPower, CONFIG.POWER_SPEED * dt);
+  updateFacingFromAim(p);
+  if (p.aim === ai.targetAim && p.power === ai.targetPower) {
+    ai.aimed = true;
+    ai.wait = 0.35;                       // short pause before the slap
+  }
 }
 
 /* ======================================================================
@@ -1238,7 +1398,7 @@ function drawHealthPanel(p, x) {
   ctx.textAlign = 'left';
   ctx.font = 'bold 18px system-ui, sans-serif';
   ctx.fillStyle = p.light;
-  ctx.fillText(`${p.name} Squirrel`, x + 14, 32);
+  ctx.fillText(isAI(p) ? `${p.name} · AI ${AI_LEVELS[gameMode.difficulty].label}` : `${p.name} Squirrel`, x + 14, 32);
   ctx.textAlign = 'right';
   ctx.fillStyle = '#fff';
   ctx.fillText(`${Math.ceil(p.health)} HP`, x + 256, 32);
@@ -1302,7 +1462,7 @@ function drawHUD() {
   // "Round N · <Name> · <Phase>", with the name in team colour, centred as a whole
   const parts = [
     [`Round ${round} · `, '#fff'],
-    [p.name, p.light],
+    [displayName(p), p.light],
     [phaseName ? ` · ${phaseName}` : '', '#fff'],
   ];
   const total = parts.reduce((sum, [text]) => sum + ctx.measureText(text).width, 0);
@@ -1329,8 +1489,12 @@ function drawHUD() {
     ctx.fillRect(bx + 16, by + 32, 200 * (moveLeft / CONFIG.MOVE_DISTANCE), 14);
     ctx.font = '14px system-ui, sans-serif';
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.fillText('← / → walk', bx + 236, by + 20);
-    ctx.fillText('Enter: done moving', bx + 236, by + 42);
+    if (isAI(p)) {
+      ctx.fillText('The computer is moving…', bx + 236, by + 31);
+    } else {
+      ctx.fillText('← / → walk', bx + 236, by + 20);
+      ctx.fillText('Enter: done moving', bx + 236, by + 42);
+    }
   } else if (state === 'aim') {
     const elevation = p.aim <= 90 ? p.aim : 180 - p.aim;
     const arrow = aimVector(p).x >= 0 ? '→' : '←';
@@ -1349,8 +1513,12 @@ function drawHUD() {
     ctx.fillRect(bx + 16, by + 32, 200 * (p.power / 100), 14);
     ctx.font = '14px system-ui, sans-serif';
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.fillText('↑ / ↓ angle   ← / → power', bx + 236, by + 20);
-    ctx.fillText('Space: SHOOT', bx + 236, by + 42);
+    if (isAI(p)) {
+      ctx.fillText('The computer is aiming…', bx + 236, by + 31);
+    } else {
+      ctx.fillText('↑ / ↓ angle   ← / → power', bx + 236, by + 20);
+      ctx.fillText('Space: SHOOT', bx + 236, by + 42);
+    }
   }
 
   // Turn banner
@@ -1391,26 +1559,26 @@ function drawTitle() {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  ctx.font = 'bold 68px system-ui, sans-serif';
+  ctx.font = 'bold 64px system-ui, sans-serif';
   ctx.lineWidth = 8;
   ctx.strokeStyle = '#000';
-  ctx.strokeText('SLAPSHOT SQUIRRELS', W / 2, 150);
+  ctx.strokeText('SLAPSHOT SQUIRRELS', W / 2, 110);
   ctx.fillStyle = '#ffd23b';
-  ctx.fillText('SLAPSHOT SQUIRRELS', W / 2, 150);
+  ctx.fillText('SLAPSHOT SQUIRRELS', W / 2, 110);
 
   ctx.font = '20px system-ui, sans-serif';
   ctx.fillStyle = '#fff';
-  ctx.fillText('Two squirrels. Two islands. Exploding hockey pucks.', W / 2, 210);
+  ctx.fillText('Two squirrels. Two islands. Exploding hockey pucks.', W / 2, 165);
 
   const lines = [
     ['Move phase', '← / → walk along the island, Enter to finish moving'],
     ['Aim phase', '↑ / ↓ change angle, ← / → change power, Space to shoot'],
     ['Win by', 'reducing the other squirrel to 0 HP or knocking them into the water'],
-    ['Never', 'hit the red button with a puck, or click it on your turn. You lose instantly.'],
+    ['Never', 'hit the red button with a puck, or click it. You lose instantly.'],
   ];
   ctx.font = '17px system-ui, sans-serif';
   lines.forEach(([k, v], i) => {
-    const y = 275 + i * 36;
+    const y = 215 + i * 34;
     ctx.textAlign = 'right';
     ctx.fillStyle = i === 3 ? '#ff6b6b' : '#9fe0ff';
     ctx.font = 'bold 17px system-ui, sans-serif';
@@ -1421,14 +1589,32 @@ function drawTitle() {
     ctx.fillText(v, W / 2 - 180, y);
   });
 
+  // Game mode menu
   ctx.textAlign = 'center';
-  ctx.font = 'bold 26px system-ui, sans-serif';
+  MENU.forEach((item, i) => {
+    const r = menuRect(i);
+    const selected = i === menuIndex;
+    roundRectPath(ctx, r.x, r.y, r.w, r.h, 10);
+    ctx.fillStyle = selected ? '#ffd23b' : 'rgba(255,255,255,0.12)';
+    ctx.fill();
+    ctx.font = 'bold 20px system-ui, sans-serif';
+    ctx.fillStyle = selected ? '#2a2000' : '#fff';
+    ctx.fillText(item.label, W / 2, r.y + r.h / 2 + 1);
+  });
+
+  ctx.font = '16px system-ui, sans-serif';
   ctx.fillStyle = `rgba(255,255,255,${0.6 + 0.4 * Math.sin(time * 4)})`;
-  ctx.fillText('Press ENTER or click to start', W / 2, 470);
+  ctx.fillText('↑ / ↓ choose a mode, ENTER or click to start   ·   vs Computer: you play Red', W / 2, 640);
 }
 
-/** Rectangle of the "Play again" button on the game-over screen. */
-const PLAY_AGAIN = { x: W / 2 - 110, y: 430, w: 220, h: 56 };
+/** Rectangle of the i-th game mode button on the title screen. */
+function menuRect(i) {
+  return { x: W / 2 - 180, y: 380 + i * 54, w: 360, h: 44 };
+}
+
+/** Buttons on the game-over screen. */
+const PLAY_AGAIN = { x: W / 2 - 230, y: 430, w: 220, h: 56 };
+const MAIN_MENU = { x: W / 2 + 10, y: 430, w: 220, h: 56 };
 
 function drawGameOver() {
   ctx.fillStyle = `rgba(8,16,30,${Math.min(0.7, gameOverTimer * 1.5)})`;
@@ -1440,7 +1626,7 @@ function drawGameOver() {
   ctx.font = 'bold 56px system-ui, sans-serif';
   if (result.winner) {
     ctx.fillStyle = result.winner.color;
-    ctx.fillText(`${result.winner.name} wins!`, W / 2, 240);
+    ctx.fillText(`${displayName(result.winner)} wins!`, W / 2, 240);
   } else {
     ctx.fillStyle = '#fff';
     ctx.fillText("It's a draw!", W / 2, 240);
@@ -1454,16 +1640,22 @@ function drawGameOver() {
     ctx.fillText('It said DO NOT PRESS.', W / 2, 385);
   }
 
-  const hover = inRect(mouse, PLAY_AGAIN);
-  roundRectPath(ctx, PLAY_AGAIN.x, PLAY_AGAIN.y, PLAY_AGAIN.w, PLAY_AGAIN.h, 12);
-  ctx.fillStyle = hover ? '#ffe270' : '#ffd23b';
-  ctx.fill();
-  ctx.font = 'bold 24px system-ui, sans-serif';
-  ctx.fillStyle = '#2a2000';
-  ctx.fillText('Play again', W / 2, PLAY_AGAIN.y + PLAY_AGAIN.h / 2 + 1);
+  drawScreenButton(PLAY_AGAIN, 'Play again', true);
+  drawScreenButton(MAIN_MENU, 'Main menu', false);
   ctx.font = '14px system-ui, sans-serif';
   ctx.fillStyle = 'rgba(255,255,255,0.7)';
-  ctx.fillText('or press Enter', W / 2, PLAY_AGAIN.y + PLAY_AGAIN.h + 18);
+  ctx.fillText('Enter: play again   ·   Esc: main menu', W / 2, PLAY_AGAIN.y + PLAY_AGAIN.h + 20);
+}
+
+function drawScreenButton(r, label, primary) {
+  const hover = inRect(mouse, r);
+  roundRectPath(ctx, r.x, r.y, r.w, r.h, 12);
+  ctx.fillStyle = primary ? (hover ? '#ffe270' : '#ffd23b') : (hover ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.18)');
+  ctx.fill();
+  ctx.font = 'bold 24px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = primary ? '#2a2000' : '#fff';
+  ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2 + 1);
 }
 
 function inRect(pt, r) {
@@ -1505,15 +1697,23 @@ const GAME_KEYS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', '
 window.addEventListener('keydown', e => {
   if (GAME_KEYS.includes(e.code)) e.preventDefault();
   keys[e.code] = true;
+
+  // Title screen: choose a game mode
+  if (state === 'title') {
+    if (e.code === 'ArrowUp') menuIndex = (menuIndex + MENU.length - 1) % MENU.length;
+    if (e.code === 'ArrowDown') menuIndex = (menuIndex + 1) % MENU.length;
+  }
   if (e.repeat) return;
 
   const enter = e.code === 'Enter' || e.code === 'NumpadEnter';
+  const humanTurn = players.length > 0 && !isAI(active());
   if (enter) {
-    if (state === 'title') newGame(true);
+    if (state === 'title') startMode(menuIndex);
     else if (state === 'gameover' && gameOverTimer > 0.5) newGame(true);
-    else if (state === 'move' && active().grounded) startAiming();
+    else if (state === 'move' && humanTurn && active().grounded) startAiming();
   }
-  if (e.code === 'Space' && state === 'aim') shoot();
+  if (e.code === 'Space' && state === 'aim' && humanTurn) shoot();
+  if (e.code === 'Escape' && state === 'gameover') newGame(false);
 });
 
 window.addEventListener('keyup', e => { keys[e.code] = false; });
@@ -1524,13 +1724,19 @@ const TURN_STATES = ['move', 'aim', 'swing', 'flight', 'settle'];
 
 canvas.addEventListener('mousedown', e => {
   const pt = toGameCoords(e);
-  if (state === 'title') { newGame(true); return; }
+  if (state === 'title') {
+    MENU.forEach((_, i) => { if (inRect(pt, menuRect(i))) startMode(i); });
+    return;
+  }
   if (state === 'gameover') {
     if (gameOverTimer > 0.5 && inRect(pt, PLAY_AGAIN)) newGame(true);
+    else if (gameOverTimer > 0.5 && inRect(pt, MAIN_MENU)) newGame(false);
     return;
   }
   if (TURN_STATES.includes(state) && touchesButton(pt.x, pt.y, 4)) {
-    triggerButton(active(), 'click');
+    // Hot-seat: the player whose turn it is loses. Against the computer only
+    // the human can click, so the human loses (even during the AI's turn).
+    triggerButton(gameMode.ai ? players[0] : active(), 'click');
   }
 });
 
@@ -1539,8 +1745,12 @@ canvas.addEventListener('mousemove', e => {
   mouse.x = pt.x;
   mouse.y = pt.y;
   const overButton = TURN_STATES.includes(state) && touchesButton(pt.x, pt.y, 4);
-  const overPlay = state === 'gameover' && inRect(pt, PLAY_AGAIN);
-  canvas.style.cursor = overButton || overPlay ? 'pointer' : 'default';   // so tempting...
+  const overPlay = state === 'gameover' && (inRect(pt, PLAY_AGAIN) || inRect(pt, MAIN_MENU));
+  let overMenu = false;
+  if (state === 'title') {
+    MENU.forEach((_, i) => { if (inRect(pt, menuRect(i))) { menuIndex = i; overMenu = true; } });
+  }
+  canvas.style.cursor = overButton || overPlay || overMenu ? 'pointer' : 'default';   // so tempting...
 });
 
 /* ======================================================================
