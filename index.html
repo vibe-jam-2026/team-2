@@ -15,6 +15,8 @@
   GAME 3 (Slapshot Squirrels) is its own page, slapshot-squirrels.html; its card in the GAMES list
   links there (href) and is left out of the survival score and "Play all games".
   GAME 4 (Ice Brawl Pro) is a harder, skill-based remix of Ice Brawl: class IceBrawlPro extends IceBrawl.
+  GAME 5 (Ice Brawl: Face-Off) is first person with two hands. Games may optionally take their own input
+  (keyDown/keyUp/pointerDown/pointerUp/releaseAll) and add bonus seconds to their score (.bonus).
   To add a framework game instead: write a class with the same shape as JetEscape / IceBrawl
   (reset, start, action, update, draw, plus .time and .state) and add it to the GAMES list.
 -->
@@ -173,7 +175,7 @@ kbd{font:inherit;font-weight:800;font-size:.82rem;padding:3px 9px;border-radius:
   <div class="wrap">
     <div class="marquee"><span class="bulbs"></span>
       <h1>Survival Hub</h1>
-      <p>Four tiny games, one button. Stay alive as long as you can.</p>
+      <p>Five tiny games. Stay alive as long as you can.</p>
     </div>
     <div class="overall">
       <div class="ring" id="hubRing"><b id="hubScore">0</b></div>
@@ -1008,6 +1010,478 @@ class IceBrawlPro extends IceBrawl {
 }
 
 /* =====================================================================
+   GAME 5 — ICE BRAWL: FACE-OFF  (first person, two hands)
+   Q / E punch with the left / right hand, hold A / D to block on that
+   side of the screen. Block just before a punch lands for a PERFECT
+   (the rival is left open); a block held too long gets weaker and
+   finally breaks. The rival guards one side, reacts to your habits,
+   and can be knocked out: every knockout is +10 seconds on the clock.
+   Reuses Ice Brawl's arena, crowd and comic text.
+   ===================================================================== */
+const FP = {
+  PUNCH_HIT: 0.1, PUNCH_LEN: 0.26, PUNCH_RECOVER: 0.12, PUNCH_COST: 18,
+  STAM_REGEN: 20, BLOCK_DRAIN: 7,
+  PERFECT: 0.12, GOOD: 0.4, WEAK: 1.2,     // how long a block has been held: perfect → good → weak → guard break
+  REGEN: 0.5, KO_BONUS: 10, KO_HEAL: 20,
+  DMG: { hit: 8, counter: 13, stuff: 10 },
+  ATK: {
+    jab:   { wind: [0.62, 0.42], depth: 0.6,  dmg: 12, color: '#ffd166', name: 'JAB!' },
+    hook:  { wind: [1.0, 0.7],   depth: 1,    dmg: 26, color: '#ff3b3b', name: 'HOOK!' },
+    feint: { wind: [0.9, 0.66],  depth: 0.55, dmg: 0,  color: '#ff3b3b' }   // looks like a hook but the arm stops short
+  }
+};
+const RIVALS = [
+  { jersey: '#e63946', stripe: '#ffd166', helmet: '#e63946' },
+  { jersey: '#2a9d5b', stripe: '#ffffff', helmet: '#1e6e40' },
+  { jersey: '#7b2cbf', stripe: '#ffd166', helmet: '#5a189a' },
+  { jersey: '#f77f00', stripe: '#14172a', helmet: '#d45d00' },
+  { jersey: '#22252f', stripe: '#e63946', helmet: '#16161c' }
+];
+const FP_KEYS = { KeyQ: ['punch', 'L'], KeyE: ['punch', 'R'], KeyA: ['block', 'L'], KeyD: ['block', 'R'] };
+const SIDES = ['L', 'R'], sgn = s => s === 'L' ? -1 : 1, otherSide = s => s === 'L' ? 'R' : 'L';
+const P_LERP = (a, b, t) => ({ x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), s: lerp(a.s, b.s, t) });
+
+class IceBrawlFP extends IceBrawl {
+  get iceY() { return this.v.H * 0.5; }
+  get feetY() { return this.v.H * 0.74; }
+  get k() { return this.v.H / 480; }
+  get meter() { return this.balance / 100; }
+  get diff() { return clamp(this.time / 70 + (this.round - 1) * 0.15, 0, 1); }
+  reset() {
+    super.reset();
+    this.bonus = 0; this.round = 1; this.kos = 0; this.combo = 0; this.touch = !!this.touch; this.stamina = 100; this.slow = 0; this.flash = 0; this.fall = 0;
+    this.hands = {}; this.held = {};
+    for (const s of SIDES) { this.hands[s] = { st: 'rest', t: 0, bt: 0, stunT: 0, resolved: false, pos: null }; this.held[s] = new Set(); }
+    this.pointers = new Map(); this.usage = { L: 0, R: 0 }; this.lastPunches = [];
+    this.e = this.newRival();
+  }
+  newRival() {
+    const hp = 120 + 30 * (this.round - 1);
+    return { mode: 'guard', modeT: 0, gapT: 1.3, guard: Math.random() < 0.5 ? 'L' : 'R', guardT: rand(0.8, 1.6),
+      hp, maxHp: hp, atk: null, combo: 0, punish: null, flinch: 0, flinchDir: 1, drop: 0,
+      col: Object.assign({}, RIVALS[(this.round - 1) % RIVALS.length], { skin: SKINS[(Math.random() * SKINS.length) | 0] }),
+      fist: { L: null, R: null } };
+  }
+
+  /* ---------- input (the hub forwards keys and pointers to games that want them) ---------- */
+  action() {}
+  keyDown(code, repeat) {
+    const m = FP_KEYS[code]; if (!m) return false;
+    if (!repeat) this.press(m[0], m[1], code);
+    return true;
+  }
+  keyUp(code) { const m = FP_KEYS[code]; if (m && m[0] === 'block') this.release(m[1], code); }
+  pointerDown(id, x, y, touch) {
+    if (touch) this.touch = true;
+    const m = [y < this.v.H * 0.6 ? 'punch' : 'block', x < this.v.W / 2 ? 'L' : 'R'];
+    this.pointers.set(id, m); this.press(m[0], m[1], 'p' + id);
+  }
+  pointerUp(id) { const m = this.pointers.get(id); if (!m) return; this.pointers.delete(id); if (m[0] === 'block') this.release(m[1], 'p' + id); }
+  releaseAll() { for (const s of SIDES) { this.held[s].clear(); this.syncBlock(s); } this.pointers.clear(); }
+  press(act, side, src) {
+    if (act === 'block') { this.held[side].add(src); this.syncBlock(side); }
+    else this.punch(side);
+  }
+  release(side, src) { this.held[side].delete(src); this.syncBlock(side); }
+  syncBlock(s) {
+    const h = this.hands[s], want = this.held[s].size > 0;
+    if (want && h.st === 'rest') { h.st = 'block'; h.bt = 0; h.t = 0; }
+    else if (!want && h.st === 'block') { h.st = 'rest'; h.t = 0; }
+  }
+
+  /* ---------- your punches ---------- */
+  punch(s) {
+    if (this.state !== 'running') return;
+    const h = this.hands[s];
+    if (h.st !== 'rest') return;                       // a blocking, punching, recoiling or stunned hand can't punch
+    if (this.stamina < FP.PUNCH_COST) { addText(this.texts, 'TIRED!', this.v.W / 2 + sgn(s) * 150 * this.k, this.v.H * 0.72, '#9fe0ff', 22); return; }
+    this.stamina -= FP.PUNCH_COST; h.st = 'punch'; h.t = 0; h.resolved = false;
+    this.usage[s] += 1; this.lastPunches.push(s); if (this.lastPunches.length > 4) this.lastPunches.shift();
+  }
+  landPunch(s) {
+    const E = this.e;
+    if (E.mode === 'ko' || E.mode === 'enter' || E.mode === 'celebrate') return;
+    if (E.mode === 'open') return this.hitRival(FP.DMG.counter * (1 + this.combo * 0.1), s, 'COUNTER!', '#7dffb0');
+    if (E.mode === 'tell') {
+      // only a slow hook can be cut off, and only early in its wind-up; otherwise the other hand guards
+      if (s === E.atk.side && E.atk.type === 'hook' && E.atk.prog < 0.5) { this.hitRival(FP.DMG.stuff, s, 'STUFFED!', '#ffcf4a'); if (E.mode === 'tell') { E.mode = 'flinch'; E.modeT = 0.4; E.combo = 0; } return; }
+      return this.blocked(s, Math.random() < 0.3);
+    }
+    if (E.mode === 'strike' && s === E.atk.side) return this.hitRival(FP.DMG.hit, s, 'POW!', '#ffcf4a');   // its punching arm is still out
+    if (E.mode !== 'guard') return this.blocked(s, false);
+    // guarding: the guarded side blocks, the open side may get a late reaction
+    const spam = this.lastPunches.length >= 3 && this.lastPunches.slice(-3).every(x => x === s);
+    if (s === E.guard) return this.blocked(s, spam || Math.random() < 0.15 + 0.05 * this.round);
+    const habit = this.usage[s] / (this.usage.L + this.usage.R + 1);
+    const react = clamp(0.3 + 0.1 * (this.round - 1) + 0.15 * this.diff + habit * 0.25, 0, 0.8);
+    if (Math.random() < react) { E.guard = s; E.guardT = rand(0.6, 1.4); return this.blocked(s, false); }
+    this.hitRival(FP.DMG.hit, s, 'POW!', '#ffcf4a');
+  }
+  hitRival(dmg, s, txt, col) {
+    const E = this.e, L = this.layout();
+    E.hp -= dmg; E.flinch = 1; E.flinchDir = sgn(s);
+    if (E.mode === 'guard') { E.mode = 'flinch'; E.modeT = 0.22; }
+    addText(this.texts, txt, L.cx + sgn(s) * 70 * L.k, L.head - 40 * L.k, col, txt === 'POW!' ? 32 : 36);
+    this.shake = Math.max(this.shake, 0.35); this.cheer = Math.max(this.cheer, 0.5);
+    if (E.hp <= 0) this.koRival();
+  }
+  blocked(s, parry) {
+    const h = this.hands[s], E = this.e, L = this.layout();
+    if (parry) {
+      h.st = 'stun'; h.t = 0; h.stunT = 0.8; this.lastPunches = [];
+      addText(this.texts, 'PARRIED!', L.cx + sgn(s) * 60 * L.k, L.head - 30 * L.k, '#ff9de0', 30);
+      if (E.mode === 'guard') { E.punish = s; E.gapT = Math.min(E.gapT, 0.05); }
+    } else {
+      h.st = 'recoil'; h.t = 0;
+      addText(this.texts, 'BLOCKED', L.cx + sgn(s) * 60 * L.k, L.head - 30 * L.k, '#c9d3de', 22);
+    }
+  }
+  koRival() {
+    const E = this.e, { W, H } = this.v;
+    E.hp = 0; E.mode = 'ko'; E.modeT = 2.6; E.combo = 0;
+    this.kos++; this.bonus += FP.KO_BONUS; this.balance = Math.min(100, this.balance + FP.KO_HEAL);
+    this.cheer = 1; this.shake = 1;
+    addText(this.texts, 'KNOCKOUT!', W / 2, H * 0.3, '#ffcf4a', 48);
+    addText(this.texts, `+${FP.KO_BONUS}s`, W / 2, H * 0.42, '#7dffb0', 30);
+  }
+
+  /* ---------- the rival ---------- */
+  gap() { const d = this.diff; return (1.2 - 0.6 * d) + Math.random() * (0.7 - 0.35 * d); }
+  pickGuard() {
+    const E = this.e, u = this.usage, smart = clamp(0.3 + 0.12 * (this.round - 1), 0, 0.8);
+    E.guard = Math.random() < lerp(0.5, (u.L + 0.5) / (u.L + u.R + 1), smart) ? 'L' : 'R';   // guards the side you punch most
+    E.guardT = rand(0.7, 1.7);
+  }
+  nextAttack() {
+    const E = this.e, d = this.diff, r = Math.random();
+    const feintP = this.time > 10 ? 0.1 + 0.15 * d : 0;
+    const type = r < feintP ? 'feint' : r < feintP + 0.45 ? 'jab' : 'hook';
+    let side = Math.random() < 0.5 ? 'L' : 'R';
+    const bl = SIDES.filter(s => this.hands[s].st === 'block');
+    if (bl.length === 1 && Math.random() < 0.35 + 0.35 * d) side = otherSide(bl[0]);   // goes around a held block
+    let speed = 1;
+    if (E.punish) { side = E.punish; E.punish = null; speed = 0.75; }
+    E.combo = type !== 'feint' && this.time > 15 && Math.random() < 0.15 + 0.3 * d ? (Math.random() < d * 0.6 ? 2 : 1) : 0;
+    this.startAttack(type, side, speed);
+  }
+  startAttack(type, side, speed = 1) {
+    const A = FP.ATK[type], d = this.diff, dur = lerp(A.wind[0], A.wind[1], d) * speed;
+    const hitch = type === 'hook' && this.time > 10 && Math.random() < 0.2 + 0.3 * d;   // freezes mid wind-up to bait an early block
+    const E = this.e; E.mode = 'tell'; E.guard = otherSide(side);
+    E.atk = { type, side, el: 0, prog: 0, dur, hitchAt: hitch ? dur * rand(0.4, 0.65) : -1, hitchLen: hitch ? rand(0.2, 0.4) : 0 };
+  }
+  impact() {
+    const E = this.e, a = E.atk, s = a.side, { W, H } = this.v, k = this.k;
+    const tx = W / 2 + sgn(s) * 120 * k, ty = H * 0.5;
+    if (a.type === 'feint') { E.mode = 'feint'; E.modeT = 0.14; addText(this.texts, 'FAKE!', tx, ty - 60 * k, '#ff9de0', 28); return; }
+    const A = FP.ATK[a.type], dmg = A.dmg * (1 + 0.5 * this.diff), h = this.hands[s];
+    E.mode = 'strike'; E.modeT = 0.32;
+    if (h.st === 'block') {
+      const bt = this.stamina <= 0 ? h.bt + FP.GOOD : h.bt;          // out of stamina: no perfect blocks
+      if (bt <= FP.PERFECT) {
+        E.mode = 'open'; E.modeT = 0.85; E.combo = 0; this.slow = 0.2; this.combo = Math.min(this.combo + 1, 5);
+        this.stamina = Math.min(100, this.stamina + 15); this.cheer = Math.max(this.cheer, 0.7);
+        addText(this.texts, 'PERFECT!', tx, ty, '#7dffb0', 34); return;
+      }
+      this.combo = 0;
+      if (bt <= FP.GOOD) { addText(this.texts, 'BLOCK', tx, ty, '#c9d3de', 24); this.shake = 0.2; this.hurt(dmg * 0.35); return; }
+      if (bt <= FP.WEAK) { addText(this.texts, 'WEAK BLOCK', tx, ty, '#ffb347', 24); this.shake = 0.4; this.hurt(dmg * lerp(0.4, 0.8, (bt - FP.GOOD) / (FP.WEAK - FP.GOOD))); return; }
+      h.st = 'stun'; h.t = 0; h.stunT = 0.7;
+      addText(this.texts, 'GUARD BREAK!', tx, ty - 40 * k, '#ff6b6b', 28);
+    }
+    this.combo = 0; this.flash = 1; this.shake = A.dmg > 15 ? 1 : 0.6;
+    addText(this.texts, A.name, tx, ty, '#ff6b6b', A.dmg > 15 ? 38 : 30);
+    this.hurt(dmg);
+  }
+  hurt(d) {
+    this.balance -= d;
+    if (this.balance <= 0.5 && this.state === 'running') {
+      const { W, H } = this.v;
+      this.balance = 0; this.state = 'dying'; this.endT = 2.6; this.e.mode = 'celebrate'; this.cheer = 1; this.releaseAll();
+      addText(this.texts, 'DOWN!', W / 2, H * 0.34, '#ffffff', 46);
+    }
+  }
+  updateRival(dt) {
+    const E = this.e;
+    switch (E.mode) {
+      case 'guard':
+        E.guardT -= dt; if (E.guardT <= 0) this.pickGuard();
+        E.gapT -= dt; if (E.gapT <= 0) this.nextAttack();
+        break;
+      case 'tell': {
+        const a = E.atk; a.el += dt;
+        let e = a.el;                                                     // wind-up time minus any hitch pause
+        if (a.hitchAt >= 0 && a.el > a.hitchAt) e = a.el < a.hitchAt + a.hitchLen ? a.hitchAt : a.el - a.hitchLen;
+        a.prog = Math.min(1, e / a.dur);
+        if (e >= a.dur) this.impact();
+        break;
+      }
+      case 'celebrate': break;
+      default:
+        E.modeT -= dt;
+        if (E.modeT > 0) break;
+        if (E.mode === 'feint') this.startAttack('jab', otherSide(E.atk.side), 0.7);     // quick punch from the other side
+        else if (E.mode === 'strike' && E.combo > 0) { E.combo--; this.startAttack(Math.random() < 0.6 ? 'jab' : 'hook', Math.random() < 0.7 ? otherSide(E.atk.side) : E.atk.side, 0.75); }
+        else if (E.mode === 'ko') {
+          this.round++; this.e = this.newRival(); this.e.mode = 'enter'; this.e.modeT = 1; this.e.drop = 1;
+          addText(this.texts, `ROUND ${this.round}`, this.v.W / 2, this.v.H * 0.3, '#ffffff', 40);
+        } else { E.mode = 'guard'; E.gapT = this.gap(); this.pickGuard(); }
+    }
+  }
+
+  /* ---------- loop ---------- */
+  update(dt) {
+    const { W, H } = this.v;
+    if (this.slow > 0) { this.slow -= dt; dt *= 0.3; }                 // slow-mo after a perfect block
+    this.t += dt;
+    this.cheer = Math.max(0, this.cheer - dt * 0.7); this.shake = Math.max(0, this.shake - dt * 3); this.flash = Math.max(0, this.flash - dt * 3);
+    if (this.state === 'countdown') {
+      this.cd -= dt;
+      if (this.cd <= 0) { this.state = 'running'; this.cheer = 1; addText(this.texts, 'FIGHT!', W / 2, H * 0.34, '#ffcf4a', 46); }
+    } else if (this.state === 'running') {
+      this.time += dt;
+      this.balance = Math.min(100, this.balance + FP.REGEN * dt);
+      const blocking = SIDES.filter(s => this.hands[s].st === 'block').length;
+      this.stamina = clamp(this.stamina + (blocking ? -FP.BLOCK_DRAIN * blocking : FP.STAM_REGEN) * dt, 0, 100);
+      const decay = Math.exp(-dt * 0.5); this.usage.L *= decay; this.usage.R *= decay;
+      for (const s of SIDES) {
+        const h = this.hands[s]; h.t += dt;
+        if (h.st === 'block') h.bt += dt;
+        else if (h.st === 'punch') {
+          if (!h.resolved && h.t >= FP.PUNCH_HIT) { h.resolved = true; this.landPunch(s); }
+          if (h.st === 'punch' && h.t >= FP.PUNCH_LEN) { h.st = 'recover'; h.t = 0; }
+        } else if ((h.st === 'recover' && h.t >= FP.PUNCH_RECOVER) || (h.st === 'recoil' && h.t >= 0.4) || (h.st === 'stun' && h.t >= h.stunT)) {
+          h.st = 'rest'; h.t = 0; this.syncBlock(s);
+        }
+      }
+      if (this.state === 'running') this.updateRival(dt);
+    } else if (this.state === 'dying') {
+      this.endT -= dt; this.fall = Math.min(1, this.fall + dt * 1.6);
+      if (this.endT <= 0) this.state = 'done';
+    }
+    // animate the rival
+    const E = this.e;
+    E.flinch = Math.max(0, E.flinch - dt * 4);
+    E.drop = ease(E.drop, E.mode === 'ko' && E.modeT < 2.3 ? 1 : 0, dt, E.mode === 'enter' ? 3 : 4);
+    for (const s of SIDES) {
+      const tgt = this.fistTarget(s);
+      if (!E.fist[s] || (E.mode === 'tell' && s === E.atk.side)) E.fist[s] = tgt;   // the wind-up is exact, so you can time it
+      else { const r = E.mode === 'strike' ? 40 : 16, f = E.fist[s]; f.x = ease(f.x, tgt.x, dt, r); f.y = ease(f.y, tgt.y, dt, r); f.s = ease(f.s, tgt.s, dt, r); }
+    }
+    for (const s of SIDES) {
+      const h = this.hands[s], tgt = this.handTarget(s);
+      if (!h.pos || h.st === 'punch') h.pos = tgt;
+      else { const r = h.st === 'block' ? 30 : 14; h.pos.x = ease(h.pos.x, tgt.x, dt, r); h.pos.y = ease(h.pos.y, tgt.y, dt, r); h.pos.s = ease(h.pos.s, tgt.s, dt, r); }
+    }
+    tickTexts(this.texts, dt);
+  }
+
+  /* ---------- layout ---------- */
+  layout() {
+    const { W, H } = this.v, k = this.k, E = this.e;
+    const bob = Math.sin(this.t * 2.2) * 4 * k;
+    const lean = E.mode === 'tell' ? sgn(E.atk.side) * 16 * k * E.atk.prog * FP.ATK[E.atk.type].depth : 0;
+    const cx = W / 2 + lean + E.flinchDir * E.flinch * 18 * k;
+    const sh = H * 0.53 + bob + E.drop * H * 0.7;
+    return { cx, sh, head: sh - 72 * k, k };
+  }
+  fistTarget(s) {
+    const E = this.e, L = this.layout(), k = L.k, g = sgn(s), { W, H } = this.v;
+    const low = { x: L.cx + g * 95 * k, y: L.sh + 100 * k, s: 1 };
+    const guard = { x: L.cx + g * 42 * k, y: L.head + 34 * k, s: 1.1 };
+    switch (E.mode) {
+      case 'tell':
+        if (s !== E.atk.side) return guard;
+        return P_LERP(low, { x: L.cx + g * 170 * k, y: L.head - 34 * k, s: 0.78 }, E.atk.prog * FP.ATK[E.atk.type].depth);
+      case 'strike': return s === E.atk.side ? { x: W / 2 + g * 80 * k, y: H * 0.6, s: 2.6 } : guard;
+      case 'feint': return s === E.atk.side ? low : guard;
+      case 'open': return { x: L.cx + g * 150 * k, y: L.sh + 150 * k, s: 1 };
+      case 'ko': return { x: L.cx + g * 125 * k, y: L.sh + 50 * k, s: 1 };
+      case 'celebrate': return { x: L.cx + g * 110 * k, y: L.head - 80 * k + Math.sin(this.t * 10 + g) * 10 * k, s: 1 };
+      default: return s === E.guard ? guard : low;
+    }
+  }
+  handTarget(s) {
+    const { W, H } = this.v, k = this.k, g = sgn(s), h = this.hands[s];
+    const rest = { x: W / 2 + g * 180 * k, y: H - 62 * k, s: 1 };
+    switch (h.st) {
+      case 'punch': {
+        const p = h.t < FP.PUNCH_HIT ? h.t / FP.PUNCH_HIT : 1 - (h.t - FP.PUNCH_HIT) / (FP.PUNCH_LEN - FP.PUNCH_HIT);
+        const L = this.layout();
+        return P_LERP(rest, { x: W / 2 + g * 48 * k, y: L.head + 24 * k, s: 0.5 }, 1 - (1 - clamp(p, 0, 1)) ** 2);
+      }
+      case 'block': {
+        const over = Math.max(0, h.bt - FP.GOOD), tr = Math.sin(this.t * 45) * Math.min(1, over) * 5 * k;
+        return { x: W / 2 + g * 118 * k + tr, y: H * 0.6 - 10 * k + tr * 0.6, s: 1.3 };
+      }
+      case 'recoil': return { x: W / 2 + g * 140 * k, y: H - 40 * k, s: 0.9 };
+      case 'stun': return { x: W / 2 + g * 240 * k, y: H + 40 * k, s: 1 };
+      default: return rest;
+    }
+  }
+
+  /* ---------- drawing ---------- */
+  drawFist(ctx, x, y, r, skin, back) {
+    ctx.fillStyle = skin; ctx.strokeStyle = OUT; ctx.lineWidth = Math.max(2, r * 0.1);
+    rr(ctx, x - r, y - r * 0.85, r * 2, r * 1.7, r * 0.55); ctx.fill(); ctx.stroke();
+    ctx.lineWidth = Math.max(1.5, r * 0.07);
+    if (back) { for (let i = -1; i <= 1; i++) line(ctx, x + i * r * 0.5, y - r * 0.75, x + i * r * 0.5, y - r * 0.35); }
+    else { for (let i = -1; i <= 1; i++) line(ctx, x - r * 0.75, y + i * r * 0.42, x + r * 0.3, y + i * r * 0.42); }
+  }
+  drawLimb(ctx, x1, y1, x2, y2, w, col) {
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = OUT; ctx.lineWidth = w + 8; line(ctx, x1, y1, x2, y2);
+    ctx.strokeStyle = col; ctx.lineWidth = w; line(ctx, x1, y1, x2, y2);
+  }
+  drawRival(ctx) {
+    const E = this.e, L = this.layout(), k = L.k, c = E.col, { H } = this.v;
+    ctx.save();
+    if (E.drop > 0.01) { ctx.translate(L.cx, H); ctx.rotate(E.drop * 0.45 * E.flinchDir); ctx.translate(-L.cx, -H); }
+    // torso
+    const tw = 210 * k, top = L.sh - 24 * k;
+    ctx.fillStyle = c.jersey; rr(ctx, L.cx - tw / 2, top, tw, H - top + 60 * k, 52 * k); ctx.fill();
+    ctx.save(); rr(ctx, L.cx - tw / 2, top, tw, H - top + 60 * k, 52 * k); ctx.clip();
+    ctx.fillStyle = c.stripe; ctx.fillRect(L.cx - tw / 2, top + 40 * k, tw, 9 * k); ctx.fillRect(L.cx - tw / 2, top + 150 * k, tw, 22 * k);
+    ctx.restore();
+    ctx.strokeStyle = OUT; ctx.lineWidth = 4 * k; rr(ctx, L.cx - tw / 2, top, tw, H - top + 60 * k, 52 * k); ctx.stroke();
+    // head
+    const dazed = E.mode === 'open' || E.mode === 'ko' || E.flinch > 0.5;
+    const hx = L.cx + E.flinchDir * E.flinch * 16 * k + (E.mode === 'open' ? Math.sin(this.t * 9) * 8 * k : 0), hy = L.head;
+    ctx.fillStyle = c.skin; ctx.beginPath(); ctx.arc(hx, hy, 50 * k, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = c.helmet; ctx.beginPath(); ctx.arc(hx, hy - 4 * k, 54 * k, Math.PI * 1.04, Math.PI * 1.96); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,.35)'; rr(ctx, hx - 30 * k, hy - 44 * k, 22 * k, 7 * k, 3 * k); ctx.fill();
+    ctx.strokeStyle = OUT; ctx.lineWidth = 3.5 * k; ctx.fillStyle = OUT;
+    for (const e of [-1, 1]) {
+      const ex = hx + e * 19 * k, ey = hy + 4 * k;
+      if (dazed) { line(ctx, ex - 6 * k, ey - 6 * k, ex + 6 * k, ey + 6 * k); line(ctx, ex + 6 * k, ey - 6 * k, ex - 6 * k, ey + 6 * k); }
+      else if (E.mode === 'celebrate') { ctx.beginPath(); ctx.arc(ex, ey + 3 * k, 7 * k, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+      else {
+        circle(ctx, ex, ey, 5 * k);
+        const angry = E.mode === 'tell' ? 1 : 0.5;
+        line(ctx, ex - e * 10 * k, ey - 13 * k - angry * 2 * k, ex + e * 8 * k, ey - 9 * k + angry * 3 * k);
+      }
+    }
+    if (E.mode === 'celebrate') { ctx.beginPath(); ctx.arc(hx, hy + 22 * k, 13 * k, 0.1, Math.PI - 0.1); ctx.stroke(); }
+    else if (dazed) { ctx.beginPath(); ctx.ellipse(hx, hy + 28 * k, 8 * k, 10 * k, 0, 0, TAU); ctx.stroke(); }
+    else line(ctx, hx - 12 * k, hy + 27 * k, hx + 12 * k, hy + (E.mode === 'tell' ? 24 : 29) * k);
+    // arms + fists
+    for (const s of SIDES) {
+      const f = E.fist[s] || this.fistTarget(s), g = sgn(s);
+      const sx = L.cx + g * 88 * k, sy = L.sh + 6 * k;
+      this.drawLimb(ctx, sx, sy, f.x, f.y, 36 * k * Math.sqrt(f.s), c.jersey);
+      this.drawFist(ctx, f.x, f.y, 26 * k * f.s, c.skin, false);
+    }
+    ctx.restore();
+  }
+  drawTell(ctx) {
+    const E = this.e, k = this.k;
+    if (this.state === 'running' && E.mode === 'tell') {
+      const a = E.atk, f = E.fist[a.side], A = FP.ATK[a.type];
+      const r = lerp(100 * k, 30 * k, a.prog), pulse = 0.75 + 0.25 * Math.sin(this.t * 25);
+      ctx.save(); ctx.globalAlpha = pulse;
+      ctx.strokeStyle = A.color; ctx.lineWidth = 6 * k; ctx.beginPath(); ctx.arc(f.x, f.y, r, 0, TAU); ctx.stroke();
+      ctx.globalAlpha = 1;
+      // which block to use: the badge sits on that side
+      const bx = f.x + sgn(a.side) * (r + 22 * k), by = f.y;
+      ctx.fillStyle = A.color; ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(bx, by, 17 * k, 0, TAU); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = a.type === 'jab' ? '#5a3b00' : '#fff'; ctx.font = `900 ${18 * k}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(this.touch ? (a.side === 'L' ? '◀' : '▶') : (a.side === 'L' ? 'A' : 'D'), bx, by + 1);
+      ctx.restore();
+    }
+    for (let i = 0; i < E.combo && (E.mode === 'tell' || E.mode === 'strike'); i++) {
+      const L = this.layout();
+      ctx.fillStyle = '#ff9de0'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(L.cx - (E.combo - 1) * 9 * k + i * 18 * k, L.head - 78 * k, 6 * k, 0, TAU); ctx.fill(); ctx.stroke();
+    }
+    if (E.mode === 'open') {
+      const L = this.layout();
+      ctx.save(); ctx.globalAlpha = 0.5 + 0.4 * Math.sin(this.t * 30);
+      ctx.strokeStyle = '#7dffb0'; ctx.lineWidth = 6 * k;
+      ctx.beginPath(); ctx.arc(L.cx, L.head, (60 + 30 * E.modeT / 0.85) * k, 0, TAU); ctx.stroke();
+      ctx.restore();
+    }
+  }
+  drawHands(ctx) {
+    const { W, H } = this.v, k = this.k;
+    for (const s of SIDES) {
+      const h = this.hands[s], g = sgn(s), p = h.pos || this.handTarget(s);
+      this.drawLimb(ctx, W / 2 + g * 300 * k, H + 90 * k, p.x, p.y + 30 * k * p.s, 64 * k * p.s, TEAM_BLUE.jersey);
+      this.drawFist(ctx, p.x, p.y, 42 * k * p.s, TEAM_BLUE.skin, true);
+      if (h.st === 'block') {
+        // block freshness: white = perfect window, green = solid, orange = weak, red = about to break
+        const bt = h.bt, col = bt <= FP.PERFECT ? '#ffffff' : bt <= FP.GOOD ? '#5ee6b0' : bt <= FP.WEAK ? '#ffb347' : '#ff5a5a';
+        ctx.save(); ctx.globalAlpha = bt <= FP.PERFECT ? 0.95 : 0.7;
+        ctx.strokeStyle = col; ctx.lineWidth = 7 * k;
+        ctx.beginPath(); ctx.arc(p.x, p.y, 62 * k * p.s, 0, TAU); ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }
+  drawUI(ctx) {
+    const { W, H } = this.v, k = this.k, E = this.e;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    // rival health
+    const bw = 190, bx = W - bw - 22, by = 40;
+    ctx.fillStyle = 'rgba(14,22,44,.7)'; rr(ctx, bx - 10, by - 28, bw + 20, 50, 14); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.15)'; rr(ctx, bx, by, bw, 9, 4); ctx.fill();
+    ctx.fillStyle = E.col.jersey; rr(ctx, bx, by, Math.max(0, bw * E.hp / E.maxHp), 9, 4); ctx.fill();
+    ctx.font = `900 13px ${FONT}`; ctx.fillStyle = '#eaf4ff';
+    ctx.fillText(`ROUND ${this.round}  ·  KOs ${this.kos}${this.bonus ? `  (+${this.bonus}s)` : ''}`, bx + bw / 2, by - 13);
+    // your stamina
+    const sw = 170, sx = W / 2 - sw / 2, sy = H - 22;
+    ctx.fillStyle = 'rgba(14,22,44,.6)'; rr(ctx, sx - 4, sy - 4, sw + 8, 14, 7); ctx.fill();
+    ctx.fillStyle = this.stamina < FP.PUNCH_COST ? '#ff5a5a' : '#8ecae6'; rr(ctx, sx, sy, sw * this.stamina / 100, 6, 3); ctx.fill();
+    ctx.font = `900 11px ${FONT}`; ctx.fillStyle = '#13223f'; ctx.fillText('STAMINA', W / 2, sy - 12);
+    // controls
+    if (this.touch) {
+      ctx.save(); ctx.globalAlpha = 0.28; ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#13223f'; ctx.lineWidth = 3;
+      for (const s of SIDES) {
+        const x = s === 'L' ? 54 : W - 54;
+        for (const [y, t] of [[H * 0.42, 'PUNCH'], [H * 0.8, 'BLOCK']]) {
+          ctx.beginPath(); ctx.arc(x, y, 38, 0, TAU); ctx.fill(); ctx.stroke();
+          ctx.globalAlpha = 0.8; ctx.fillStyle = '#13223f'; ctx.font = `900 12px ${FONT}`; ctx.fillText(t, x, y);
+          ctx.globalAlpha = 0.28; ctx.fillStyle = '#ffffff';
+        }
+      }
+      ctx.restore();
+    } else {
+      ctx.font = `800 13px ${FONT}`; ctx.fillStyle = 'rgba(19,34,63,.75)';
+      ctx.fillText('Q punch · A block', 90, H - 16);
+      ctx.fillText('D block · E punch', W - 90, H - 16);
+    }
+  }
+  draw(ctx) {
+    const { W, H } = this.v;
+    ctx.save();
+    if (this.fall > 0) { ctx.translate(W / 2, H); ctx.rotate(this.fall * 0.5); ctx.translate(-W / 2, -H + this.fall * 60); }
+    if (this.shake > 0) ctx.translate(rand(-1, 1) * this.shake * 9, rand(-1, 1) * this.shake * 6);
+    this.drawArena(ctx);
+    this.drawRival(ctx);
+    this.drawTell(ctx);
+    if (this.state !== 'dying' && this.state !== 'done') this.drawHands(ctx);
+    ctx.restore();
+    if (this.flash > 0) {
+      const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.9);
+      g.addColorStop(0, 'rgba(255,40,40,0)'); g.addColorStop(1, `rgba(255,40,40,${0.5 * this.flash})`);
+      ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    }
+    if (this.fall > 0) { ctx.fillStyle = `rgba(10,14,30,${this.fall * 0.45})`; ctx.fillRect(0, 0, W, H); }
+    if (this.state === 'running' || this.state === 'countdown') this.drawUI(ctx);
+    if (this.state === 'countdown') {
+      const n = Math.max(1, Math.ceil(this.cd)), f = this.cd - Math.floor(this.cd);
+      const sc = 1 + (f > 0.7 ? (f - 0.7) / 0.3 * 0.6 : 0);
+      ctx.save(); ctx.translate(W / 2, H * 0.34); ctx.scale(sc, sc);
+      ctx.font = `900 96px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.lineWidth = 10; ctx.strokeStyle = '#13223f'; ctx.strokeText(String(n), 0, 0);
+      ctx.fillStyle = '#ffcf4a'; ctx.fillText(String(n), 0, 0);
+      ctx.restore();
+    }
+    drawTexts(ctx, this.texts);
+  }
+}
+
+/* =====================================================================
    GAME LIST — add Game 3 here later by replacing the locked entry
    ===================================================================== */
 const GAMES = [
@@ -1044,6 +1518,15 @@ const GAMES = [
     targetTime: 60,
     theme: { hudBg: 'rgba(40,12,24,.66)', hudInk: '#ffeef2', panelBg: 'linear-gradient(165deg,#ffffff,#f6dde3)', panelInk: '#2a0f1c', panelEdge: '#ffcf4a', accent: '#c1121f', accentInk: '#ffffff' },
     create: v => new IceBrawlPro(v)
+  },
+  {
+    id: 'brawlfp', name: 'Ice Brawl: Face-Off', icon: '👊', overTitle: 'Down on the ice!', meterLabel: 'Balance',
+    art: 'radial-gradient(circle at 50% 38%,#e63946 0 22%,transparent 23%),linear-gradient(180deg,#1b2440 0%,#2a3456 55%,#dcefff 55%,#f4faff 100%)',
+    desc: 'First-person hockey fight. Punch and block with each hand, time your blocks and knock rivals out.',
+    howTo: '<b>Q</b>/<b>E</b> punch, hold <b>A</b>/<b>D</b> to block (touch: top half punches, bottom half blocks). Block the side the punch comes from just before it lands for a <b>PERFECT</b> and a free counter. Long blocks get weak. Each knockout adds <b>+10s</b>.',
+    targetTime: 60,
+    theme: { hudBg: 'rgba(14,22,44,.62)', hudInk: '#eaf4ff', panelBg: 'linear-gradient(165deg,#ffffff,#dcecf8)', panelInk: '#13223f', panelEdge: '#2f6fe0', accent: '#2f6fe0', accentInk: '#ffffff' },
+    create: v => new IceBrawlFP(v)
   }
 ];
 const available = () => GAMES.filter(g => !g.locked && !g.href);   // games that use the shared survival framework
@@ -1070,6 +1553,7 @@ window.addEventListener('resize', resize); resize();
 
 const show = el => el.classList.remove('off');
 const hide = el => el.classList.add('off');
+const runTime = g => g.time + (g.bonus || 0);   // a game may add bonus seconds (Face-Off: knockouts)
 const scoreFor = (def, time) => Math.min(100, Math.round(time / def.targetTime * 100));
 const overallScore = () => { const g = available(); return Math.round(g.reduce((a, d) => a + (best[d.id] || 0), 0) / g.length); };
 const message = s => s >= 90 ? 'Legendary!' : s >= 70 ? 'Impressive!' : s >= 40 ? 'Nice work!' : 'Good start!';
@@ -1127,19 +1611,20 @@ function showIntro() {
 }
 function showGameOver() {
   phase = 'over';
-  const time = cur.time, sc = scoreFor(curDef, time), prev = best[curDef.id];
+  const time = runTime(cur), sc = scoreFor(curDef, time), prev = best[curDef.id];
   const isBest = prev === undefined || sc > prev;
   best[curDef.id] = Math.max(prev || 0, sc);
   if (playAll) playAll.results.push({ def: curDef, time, score: sc });
   const last = playAll && playAll.idx === playAll.queue.length - 1;
   const next = playAll ? (last ? 'to see your results' : 'for the next game') : 'to play again';
-  openOverlay(`${tag()}<h2>${curDef.overTitle}</h2><p class="howto">You survived <b>${time.toFixed(1)} seconds</b>.</p>` +
+  openOverlay(`${tag()}<h2>${curDef.overTitle}</h2><p class="howto">You survived <b>${cur.time.toFixed(1)} seconds</b>${cur.bonus ? ` + <b>${cur.bonus}s</b> knockout bonus` : ''}.</p>` +
     `<div class="score">${sc}<span>/100</span></div><p class="target">${isBest && sc > 0 ? 'New best score!' : `Your best: ${best[curDef.id]}/100`}</p>` +
     `${hint(next)}<div class="row"><button class="link-btn" data-act="hub">Back to hub</button></div>`);
 }
 function setPaused(p) {
   if (phase !== 'play' || paused === p) return;
   paused = p;
+  if (p && cur.releaseAll) cur.releaseAll();
   if (p) openOverlay(`<h2>Paused</h2><p class="howto">Take a breather. Your run is waiting.</p>${hint('to resume')}<div class="row"><button class="link-btn" data-act="hub">Back to hub</button></div>`);
   else hide(overlay);
 }
@@ -1182,16 +1667,26 @@ function showResults() {
 }
 
 /* ---------- input wiring ---------- */
-canvas.addEventListener('pointerdown', e => { e.preventDefault(); handleAction(); });
+const ownInput = () => mode === 'game' && cur && phase === 'play' && !paused;
+canvas.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  if (ownInput() && cur.pointerDown) {                 // games with several buttons get the position instead
+    const r = canvas.getBoundingClientRect();
+    cur.pointerDown(e.pointerId, (e.clientX - r.left) / r.width * view.W, (e.clientY - r.top) / r.height * view.H, e.pointerType === 'touch');
+  } else handleAction();
+});
+const pointerUp = e => { if (cur && cur.pointerUp) cur.pointerUp(e.pointerId); };
+window.addEventListener('pointerup', pointerUp); window.addEventListener('pointercancel', pointerUp);
 overlay.addEventListener('pointerdown', e => { if (e.target.closest('[data-act]')) return; e.preventDefault(); handleAction(); });
 overlay.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (b && b.dataset.act === 'hub') goHub(); });
 window.addEventListener('keydown', e => {
+  if (ownInput() && cur.keyDown && cur.keyDown(e.code, e.repeat)) { e.preventDefault(); return; }
   if (e.code !== 'Space' && e.key !== ' ') return;
   if (mode !== 'game') return;
   e.preventDefault();
   if (!e.repeat) handleAction();
 });
-window.addEventListener('keyup', e => { if ((e.code === 'Space' || e.key === ' ') && mode === 'game') e.preventDefault(); });
+window.addEventListener('keyup', e => { if (mode === 'game' && cur && cur.keyUp) cur.keyUp(e.code); if ((e.code === 'Space' || e.key === ' ') && mode === 'game') e.preventDefault(); });
 $('btnHub').addEventListener('click', e => { e.currentTarget.blur(); goHub(); });
 $('btnPause').addEventListener('click', e => { e.currentTarget.blur(); setPaused(!paused); });
 $('btnPlayAll').addEventListener('click', startPlayAll);
@@ -1209,7 +1704,7 @@ function frame(now) {
   if (mode === 'game' && cur) {
     if (!paused) cur.update(dt);
     cur.draw(ctx);
-    timerEl.textContent = cur.time.toFixed(1) + 's';
+    timerEl.textContent = runTime(cur).toFixed(1) + 's';
     if (curDef.meterLabel && cur.meter !== undefined) {
       const m = clamp(cur.meter, 0, 1);
       meterFill.style.width = (m * 100) + '%';
