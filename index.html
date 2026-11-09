@@ -309,12 +309,392 @@ function drawCloud(ctx, x, y, s, col, a) {
   ctx.globalAlpha = 1;
 }
 
+/* ---------- Jet Escape scenery: the route across Sweden ----------
+   The ground scrolls by "s" (scroll distance). Each city gets one zone of ZONE units: its skyline
+   first, then countryside on the way to the next city. Something placed at s enters the right edge
+   when this.scroll reaches s; the skyline layer moves at FAR speed so it lingers on screen. */
+const ZONE = 4200, CITY_LEN = 2300, FAR = 0.6;
+const NIGHT_INK = [22, 26, 64];
+const hash = n => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+
+// k = paint kit: k.c(colour) darkens a colour as night falls (more < 0 keeps it bright, e.g. gold).
+function paintKit(ctx, night, t) {
+  return { ctx, night, t, c: (col, more = 0) => rgb(mix(col, NIGHT_INK, clamp(night * 0.6 + more, 0, 1))) };
+}
+function windowsGrid(k, x, y, w, h, cols, rows, seed) {
+  const { ctx } = k, cw = w / cols, rh = h / rows;
+  for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) {
+    const lit = k.night > 0.25 && hash(seed + i * 7.3 + j * 13.1) < 0.65;
+    ctx.fillStyle = lit ? `rgba(255,214,120,${0.35 + 0.65 * k.night})` : k.c([70, 92, 120]);
+    ctx.fillRect(x + i * cw + cw * 0.28, y + j * rh + rh * 0.22, cw * 0.44, rh * 0.5);
+  }
+}
+function house(k, x, b, w, h, wall, roof, seed) {
+  const { ctx } = k;
+  ctx.fillStyle = k.c(wall); ctx.fillRect(x, b - h, w, h);
+  ctx.fillStyle = k.c([244, 242, 236]); ctx.fillRect(x, b - h, 3, h); ctx.fillRect(x + w - 3, b - h, 3, h);
+  ctx.fillStyle = k.c(roof); ctx.beginPath(); ctx.moveTo(x - 4, b - h); ctx.lineTo(x + w / 2, b - h - Math.min(22, w * 0.45)); ctx.lineTo(x + w + 4, b - h); ctx.closePath(); ctx.fill();
+  windowsGrid(k, x + 4, b - h + 5, w - 8, Math.min(14, h * 0.5), Math.max(1, Math.round(w / 15)), 1, seed);
+}
+function block(k, x, b, w, h, col, seed) {
+  const { ctx } = k;
+  ctx.fillStyle = k.c(col); ctx.fillRect(x, b - h, w, h);
+  ctx.fillStyle = k.c(col, 0.15); ctx.fillRect(x, b - h, w, 4);
+  windowsGrid(k, x + 3, b - h + 8, w - 6, h - 14, Math.max(2, Math.round(w / 14)), Math.max(1, Math.floor((h - 14) / 15)), seed);
+}
+function pine(k, x, b, s) {
+  const { ctx } = k;
+  ctx.fillStyle = k.c([92, 64, 40]); ctx.fillRect(x - 2 * s, b - 8 * s, 4 * s, 8 * s);
+  ctx.fillStyle = k.c([30, 86, 52]);
+  for (let i = 0; i < 3; i++) {
+    const y = b - 6 * s - i * 11 * s, w = (15 - i * 4) * s;
+    ctx.beginPath(); ctx.moveTo(x - w, y); ctx.lineTo(x, y - 18 * s); ctx.lineTo(x + w, y); ctx.closePath(); ctx.fill();
+  }
+}
+function birch(k, x, b, s) {
+  const { ctx } = k;
+  ctx.fillStyle = k.c([240, 240, 232]); ctx.fillRect(x - 2 * s, b - 30 * s, 4 * s, 30 * s);
+  ctx.fillStyle = k.c([30, 30, 30]); ctx.fillRect(x - 2 * s, b - 22 * s, 3 * s, 2 * s); ctx.fillRect(x - s, b - 12 * s, 3 * s, 2 * s);
+  ctx.fillStyle = k.c([118, 178, 72]); ctx.beginPath(); ctx.ellipse(x, b - 36 * s, 13 * s, 16 * s, 0, 0, TAU); ctx.fill();
+}
+function water(k, x, b, w, depth) {
+  const { ctx } = k;
+  ctx.fillStyle = k.c([62, 132, 196]); ctx.fillRect(x, b - depth, w, depth + 2);
+  ctx.strokeStyle = `rgba(255,255,255,${0.35 - k.night * 0.2})`; ctx.lineWidth = 2;
+  for (let i = 0; i < w / 40 - 1; i++) {
+    const xx = x + i * 40 + ((k.t * 12 + i * 17) % 28), yy = b - depth + 5 + (i % 3) * 4;
+    line(ctx, xx, yy, xx + 12, yy);
+  }
+}
+function flag(k, x, b, h, kind) {           // kind 'se' = Swedish flag, 'no' = Norwegian flag
+  const { ctx } = k, fy = b - h, wv = Math.sin(k.t * 4 + x * 0.05) * 2;
+  ctx.strokeStyle = k.c([235, 235, 235]); ctx.lineWidth = 2; line(ctx, x, b, x, fy - 2);
+  const no = kind === 'no';
+  ctx.fillStyle = k.c(no ? [186, 12, 47] : [0, 106, 167]);
+  ctx.beginPath(); ctx.moveTo(x, fy); ctx.lineTo(x + 30, fy + wv); ctx.lineTo(x + 30, fy + 20 + wv); ctx.lineTo(x, fy + 20); ctx.closePath(); ctx.fill();
+  const cross = (col, th) => { ctx.fillStyle = k.c(col); ctx.fillRect(x + 10 - th / 2, fy + wv * 0.3, th, 20); ctx.fillRect(x, fy + 10 - th / 2 + wv * 0.4, 30, th); };
+  if (no) { cross([255, 255, 255], 6); cross([0, 32, 91], 3); } else cross([254, 204, 0], 4);
+}
+function church(k, x, b, o) {
+  const { ctx } = k, nx = x + o.tw - 2;
+  ctx.fillStyle = k.c(o.wall); ctx.fillRect(nx, b - o.naveH, o.nave, o.naveH);
+  ctx.fillStyle = k.c(o.roof); ctx.beginPath(); ctx.moveTo(nx - 4, b - o.naveH); ctx.lineTo(nx + o.nave / 2, b - o.naveH - 24); ctx.lineTo(nx + o.nave + 4, b - o.naveH); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = k.night > 0.3 ? `rgba(255,214,120,${0.4 + 0.5 * k.night})` : k.c([72, 84, 108]);
+  for (let wx = nx + 14; wx < nx + o.nave - 16; wx += 26) { rr(ctx, wx, b - o.naveH + 14, 9, Math.min(26, o.naveH - 22), 4); ctx.fill(); }
+  ctx.fillStyle = k.c(o.wall); ctx.fillRect(x, b - o.th, o.tw, o.th);
+  ctx.fillStyle = k.c(o.wall, 0.12); ctx.fillRect(x, b - o.th, o.tw, 5);
+  ctx.fillStyle = k.c([250, 248, 240]); circle(ctx, x + o.tw / 2, b - o.th + 16, 5);
+  ctx.fillStyle = k.c(o.roof); ctx.beginPath(); ctx.moveTo(x - 3, b - o.th); ctx.lineTo(x + o.tw / 2, b - o.th - o.sh); ctx.lineTo(x + o.tw + 3, b - o.th); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = k.c([210, 170, 60], -1); ctx.lineWidth = 2; line(ctx, x + o.tw / 2, b - o.th - o.sh, x + o.tw / 2, b - o.th - o.sh - 8);
+}
+const COPPER = [92, 158, 134];
+
+// Each scene is about 1100 units wide, drawn from x with its ground line at b.
+function sceneLinkoping(k, x, b) {
+  const { ctx } = k;
+  const walls = [[178, 52, 40], [226, 180, 92], [190, 72, 56], [130, 150, 100], [236, 214, 170]];
+  for (let i = 0; i < 6; i++) house(k, x + i * 46, b, 38, 26 + (i % 3) * 6, walls[i % 5], [74, 52, 52], 11 + i); // Gamla Linköping
+  flag(k, x + 296, b, 70, 'se');
+  church(k, x + 340, b, { nave: 230, naveH: 62, wall: [206, 192, 168], roof: COPPER, tw: 36, th: 116, sh: 88 }); // Linköping Cathedral
+  // the aviation city: an air museum hangar and a jet on a pole
+  const hx = x + 660;
+  ctx.fillStyle = k.c([152, 160, 170]); ctx.beginPath(); ctx.moveTo(hx, b); ctx.lineTo(hx, b - 30);
+  ctx.quadraticCurveTo(hx + 95, b - 84, hx + 190, b - 30); ctx.lineTo(hx + 190, b); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = k.c([96, 104, 116]); ctx.fillRect(hx + 55, b - 34, 80, 34);
+  ctx.strokeStyle = k.c([120, 126, 136]); ctx.lineWidth = 4; line(ctx, hx + 240, b, hx + 240, b - 74);
+  ctx.save(); ctx.translate(hx + 240, b - 80); ctx.rotate(-0.35); ctx.fillStyle = k.c([128, 138, 150]);
+  ctx.beginPath(); ctx.moveTo(32, 0); ctx.lineTo(-26, -4); ctx.lineTo(-26, 4); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(8, 0); ctx.lineTo(-18, -17); ctx.lineTo(-22, 0); ctx.lineTo(-18, 17); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-14, 0); ctx.lineTo(-27, -13); ctx.lineTo(-26, 0); ctx.closePath(); ctx.fill();
+  ctx.restore();
+  block(k, x + 920, b, 90, 70, [214, 206, 192], 31); block(k, x + 1020, b, 100, 54, [190, 120, 96], 37);
+}
+function sceneArboga(k, x, b) {
+  const { ctx } = k;
+  church(k, x + 10, b, { nave: 150, naveH: 46, wall: [236, 230, 214], roof: [64, 64, 74], tw: 30, th: 84, sh: 62 }); // Heliga Trefaldighets kyrka
+  for (let i = 0; i < 2; i++) house(k, x + 205 + i * 40, b, 34, 28, [178, 52, 40], [60, 48, 48], 51 + i);
+  water(k, x + 290, b, 270, 18); // Arbogaån
+  ctx.fillStyle = k.c([168, 156, 140]); ctx.fillRect(x + 282, b - 30, 290, 9);
+  for (let i = 0; i < 5; i++) ctx.fillRect(x + 290 + i * 66, b - 22, 10, 22);
+  for (let i = 0; i < 5; i++) { // half-timbered medieval houses
+    const hx = x + 600 + i * 56, h = 36 + (i % 2) * 10;
+    house(k, hx, b, 48, h, [238, 230, 210], [120, 60, 46], 61 + i);
+    ctx.strokeStyle = k.c([96, 64, 44]); ctx.lineWidth = 3;
+    line(ctx, hx + 2, b - h * 0.45, hx + 46, b - h * 0.45); line(ctx, hx + 24, b - h, hx + 24, b);
+    line(ctx, hx + 3, b - h * 0.45, hx + 22, b - 2); line(ctx, hx + 45, b - h * 0.45, hx + 26, b - 2);
+  }
+  ctx.fillStyle = k.c([150, 70, 52]); ctx.beginPath(); // old brewery chimney
+  ctx.moveTo(x + 905, b); ctx.lineTo(x + 909, b - 112); ctx.lineTo(x + 921, b - 112); ctx.lineTo(x + 925, b); ctx.closePath(); ctx.fill();
+  block(k, x + 940, b, 120, 48, [176, 84, 62], 67);
+  flag(k, x + 1080, b, 64, 'se');
+}
+function sceneOrebro(k, x, b) {
+  const { ctx } = k;
+  water(k, x + 30, b, 360, 16); // Svartån around the castle
+  const cx = x + 90;
+  const tower = (tx, w, h, col) => {
+    ctx.fillStyle = k.c(col); ctx.fillRect(tx, b - h, w, h - 10);
+    ctx.fillStyle = k.c([74, 84, 90]); ctx.beginPath(); ctx.moveTo(tx - 4, b - h);
+    ctx.quadraticCurveTo(tx + w / 2, b - h - 8, tx + w / 2, b - h - 34); ctx.quadraticCurveTo(tx + w / 2, b - h - 8, tx + w + 4, b - h);
+    ctx.closePath(); ctx.fill();
+    windowsGrid(k, tx + 4, b - h + 10, w - 8, h - 34, 2, 3, tx);
+  };
+  // Örebro slott: a square castle with round corner towers, standing in the river
+  tower(cx + 40, 34, 96, [190, 176, 150]); tower(cx + 186, 34, 96, [190, 176, 150]);
+  ctx.fillStyle = k.c([220, 206, 178]); ctx.fillRect(cx + 20, b - 74, 220, 64);
+  ctx.fillStyle = k.c([84, 92, 98]); ctx.beginPath(); ctx.moveTo(cx + 16, b - 74); ctx.lineTo(cx + 50, b - 96); ctx.lineTo(cx + 210, b - 96); ctx.lineTo(cx + 244, b - 74); ctx.closePath(); ctx.fill();
+  windowsGrid(k, cx + 46, b - 66, 170, 44, 8, 2, 71);
+  tower(cx, 44, 108, [214, 200, 172]); tower(cx + 216, 44, 108, [214, 200, 172]);
+  flag(k, x + 470, b, 64, 'se');
+  // Svampen, the mushroom-shaped water tower
+  const sx = x + 580;
+  ctx.fillStyle = k.c([232, 232, 226]); ctx.beginPath(); ctx.moveTo(sx - 16, b); ctx.lineTo(sx - 10, b - 96); ctx.lineTo(sx + 10, b - 96); ctx.lineTo(sx + 16, b); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(sx, b - 100, 66, 14, 0, 0, TAU); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(sx, b - 106, 54, 20, 0, Math.PI, TAU); ctx.fill();
+  ctx.fillStyle = k.c([196, 196, 192]); ctx.fillRect(sx - 64, b - 101, 128, 3);
+  ctx.fillStyle = k.night > 0.3 ? 'rgba(255,214,120,.85)' : k.c([90, 110, 130]); ctx.fillRect(sx - 40, b - 114, 80, 4);
+  block(k, x + 720, b, 80, 82, [220, 214, 200], 81); block(k, x + 810, b, 100, 60, [196, 110, 86], 83);
+  block(k, x + 920, b, 90, 96, [200, 206, 214], 87); block(k, x + 1020, b, 80, 52, [230, 196, 140], 89);
+}
+function sceneStockholm(k, x, b) {
+  const { ctx } = k, isl = b - 18;   // buildings stand on islands above the water
+  water(k, x - 60, b, 1260, 20);    // Riddarfjärden
+  // Stadshuset, the City Hall, with the three crowns on top of its tower
+  ctx.fillStyle = k.c([152, 64, 48]); ctx.fillRect(x + 30, isl - 52, 240, 52);
+  ctx.fillStyle = k.c(COPPER); ctx.fillRect(x + 30, isl - 58, 240, 7);
+  windowsGrid(k, x + 40, isl - 46, 140, 36, 8, 2, 91);
+  const tx = x + 196;
+  ctx.fillStyle = k.c([152, 64, 48]); ctx.fillRect(tx, isl - 158, 40, 158);
+  windowsGrid(k, tx + 6, isl - 150, 28, 60, 2, 3, 93);
+  ctx.fillStyle = k.c(COPPER); ctx.beginPath(); ctx.moveTo(tx - 2, isl - 158); ctx.lineTo(tx + 20, isl - 178); ctx.lineTo(tx + 42, isl - 158); ctx.closePath(); ctx.fill();
+  ctx.fillRect(tx + 16, isl - 196, 8, 20);
+  ctx.strokeStyle = k.c(COPPER); ctx.lineWidth = 2; line(ctx, tx + 20, isl - 196, tx + 20, isl - 212);
+  const crown = (cx, cy) => {
+    ctx.fillStyle = k.c([244, 198, 56], -1); ctx.beginPath();
+    ctx.moveTo(cx - 6, cy + 4); ctx.lineTo(cx - 6, cy - 3); ctx.lineTo(cx - 3, cy); ctx.lineTo(cx, cy - 5);
+    ctx.lineTo(cx + 3, cy); ctx.lineTo(cx + 6, cy - 3); ctx.lineTo(cx + 6, cy + 4); ctx.closePath(); ctx.fill();
+  };
+  crown(tx + 13, isl - 214); crown(tx + 27, isl - 214); crown(tx + 20, isl - 224);
+  flag(k, x + 290, isl, 60, 'se');
+  // Gamla stan: narrow coloured houses and Riddarholmskyrkan's cast-iron spire
+  const gs = [[226, 168, 70], [196, 92, 60], [236, 206, 140], [176, 70, 52], [222, 130, 64], [240, 220, 180]];
+  for (let i = 0; i < 6; i++) {
+    const hx = x + 330 + i * 38, h = 50 + hash(i + 3) * 26;
+    ctx.fillStyle = k.c(gs[i]); ctx.fillRect(hx, isl - h, 36, h);
+    ctx.beginPath(); ctx.moveTo(hx, isl - h); ctx.lineTo(hx + 18, isl - h - 16); ctx.lineTo(hx + 36, isl - h); ctx.closePath(); ctx.fill();
+    windowsGrid(k, hx + 3, isl - h + 6, 30, h - 10, 2, Math.floor(h / 18), 101 + i);
+  }
+  ctx.fillStyle = k.c([150, 74, 56]); ctx.fillRect(x + 410, isl - 102, 26, 102);
+  ctx.strokeStyle = k.c([46, 52, 64]); ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x + 408, isl - 102); ctx.lineTo(x + 423, isl - 196); ctx.lineTo(x + 438, isl - 102); ctx.stroke();
+  for (let i = 1; i < 6; i++) {
+    const y1 = isl - 102 - (i - 1) * 16, y2 = y1 - 16, w1 = 15 * (1 - (i - 1) / 6), w2 = 15 * (1 - i / 6);
+    line(ctx, x + 423 - w2, y2, x + 423 + w2, y2); line(ctx, x + 423 - w1, y1, x + 423 + w2, y2); line(ctx, x + 423 + w1, y1, x + 423 - w2, y2);
+  }
+  // Globen, the big white sphere arena
+  ctx.fillStyle = k.c([180, 180, 176]); ctx.fillRect(x + 650, isl - 8, 140, 8);
+  ctx.fillStyle = k.c([238, 238, 232]); ctx.beginPath(); ctx.arc(x + 720, isl - 30, 66, Math.PI * 0.9, Math.PI * 2.1); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = k.c([200, 200, 196]); ctx.lineWidth = 1.5;
+  for (let i = 1; i < 4; i++) { ctx.beginPath(); ctx.ellipse(x + 720, isl - 30, 66 * Math.sin(i * 0.45), 66, 0, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+  // Kaknästornet, the TV tower
+  const kx = x + 930;
+  ctx.fillStyle = k.c([186, 186, 180]); ctx.fillRect(kx, isl - 198, 22, 198);
+  ctx.fillStyle = k.c([150, 150, 146]); ctx.fillRect(kx - 8, isl - 228, 38, 34);
+  windowsGrid(k, kx - 6, isl - 224, 34, 26, 3, 2, 121);
+  ctx.strokeStyle = k.c([150, 150, 146]); ctx.lineWidth = 3; line(ctx, kx + 11, isl - 228, kx + 11, isl - 262);
+  block(k, x + 1000, isl, 110, 50, [214, 200, 176], 125);
+  const fx = x + 270 + ((k.t * 18) % 600);   // a ferry crossing the water
+  ctx.fillStyle = k.c([250, 250, 250]); ctx.beginPath(); ctx.moveTo(fx, b - 12); ctx.lineTo(fx + 64, b - 12); ctx.lineTo(fx + 56, b - 2); ctx.lineTo(fx + 6, b - 2); ctx.closePath(); ctx.fill();
+  ctx.fillRect(fx + 14, b - 22, 36, 10);
+  ctx.fillStyle = k.c([200, 40, 40]); ctx.fillRect(fx + 38, b - 30, 8, 8);
+}
+function sceneKarlstad(k, x, b) {
+  const { ctx } = k;
+  water(k, x, b, 660, 20); // Klarälven
+  // Östra bron: the long stone arch bridge
+  ctx.fillStyle = k.c([172, 162, 146]); ctx.fillRect(x + 30, b - 36, 600, 36);
+  ctx.fillStyle = k.c([150, 140, 126]); ctx.fillRect(x + 30, b - 40, 600, 6);
+  ctx.fillStyle = k.c([62, 132, 196]);
+  for (let i = 0; i < 12; i++) {
+    const ax = x + 40 + i * 49.5;
+    ctx.beginPath(); ctx.moveTo(ax, b + 1); ctx.lineTo(ax, b - 14); ctx.arc(ax + 20, b - 14, 20, Math.PI, 0); ctx.lineTo(ax + 40, b + 1); ctx.closePath(); ctx.fill();
+  }
+  flag(k, x + 640, b - 36, 50, 'se');
+  // Karlstad Cathedral with its copper-domed tower
+  const cx = x + 690;
+  ctx.fillStyle = k.c([236, 214, 152]); ctx.fillRect(cx + 40, b - 56, 170, 56);
+  ctx.fillStyle = k.c(COPPER); ctx.beginPath(); ctx.moveTo(cx + 36, b - 56); ctx.lineTo(cx + 125, b - 80); ctx.lineTo(cx + 214, b - 56); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = k.night > 0.3 ? `rgba(255,214,120,${0.4 + 0.5 * k.night})` : k.c([72, 84, 108]);
+  for (let wx = cx + 58; wx < cx + 200; wx += 28) { rr(ctx, wx, b - 44, 10, 26, 5); ctx.fill(); }
+  ctx.fillStyle = k.c([236, 214, 152]); ctx.fillRect(cx, b - 112, 44, 112);
+  ctx.fillStyle = k.c(COPPER); ctx.beginPath(); ctx.ellipse(cx + 22, b - 112, 24, 26, 0, Math.PI, TAU); ctx.fill();
+  ctx.fillRect(cx + 16, b - 150, 12, 14);
+  ctx.beginPath(); ctx.moveTo(cx + 14, b - 150); ctx.lineTo(cx + 22, b - 176); ctx.lineTo(cx + 30, b - 150); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = k.c([250, 248, 240]); circle(ctx, cx + 22, b - 92, 6);
+  // "Solstaden": Karlstad's smiling sun
+  const sx = x + 945, sy = b - 96;
+  ctx.strokeStyle = k.c([120, 120, 120]); ctx.lineWidth = 4; line(ctx, sx, b, sx, sy);
+  ctx.strokeStyle = k.c([255, 196, 40], -0.3); ctx.lineWidth = 4;
+  for (let i = 0; i < 12; i++) { const a = i / 12 * TAU + k.t * 0.5; line(ctx, sx + Math.cos(a) * 24, sy + Math.sin(a) * 24, sx + Math.cos(a) * 34, sy + Math.sin(a) * 34); }
+  ctx.fillStyle = k.c([255, 210, 60], -0.3); circle(ctx, sx, sy, 21);
+  ctx.fillStyle = '#5a3a10'; circle(ctx, sx - 7, sy - 4, 2.5); circle(ctx, sx + 7, sy - 4, 2.5);
+  ctx.strokeStyle = '#5a3a10'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(sx, sy + 1, 10, 0.2 * Math.PI, 0.8 * Math.PI); ctx.stroke();
+  block(k, x + 995, b, 110, 66, [210, 200, 186], 141);
+}
+function sceneTocksfors(k, x, b) {
+  const { ctx } = k;
+  water(k, x, b, 440, 18); // the lake
+  for (const bx of [x + 40, x + 150, x + 260]) { // red boathouses on stilts
+    ctx.fillStyle = k.c([60, 50, 40]); ctx.fillRect(bx + 4, b - 18, 4, 18); ctx.fillRect(bx + 36, b - 18, 4, 18);
+    house(k, bx, b - 16, 44, 26, [178, 52, 40], [50, 44, 44], bx);
+  }
+  for (let i = 0; i < 7; i++) pine(k, x + 465 + i * 26 + hash(i) * 10, b, 1.1 + hash(i + 9) * 0.6);
+  // the border shopping centre, a short drive from Norway
+  const sx = x + 720;
+  flag(k, sx - 40, b, 70, 'se');
+  ctx.fillStyle = k.c([228, 228, 222]); ctx.fillRect(sx, b - 50, 300, 50);
+  ctx.fillStyle = k.c([200, 40, 50]); ctx.fillRect(sx, b - 50, 300, 8);
+  windowsGrid(k, sx + 10, b - 36, 280, 26, 10, 1, 151);
+  ctx.fillStyle = k.c([30, 60, 140]); rr(ctx, sx + 80, b - 86, 140, 30, 6); ctx.fill();
+  ctx.strokeStyle = k.c([150, 150, 150]); ctx.lineWidth = 3; line(ctx, sx + 110, b - 56, sx + 110, b - 50); line(ctx, sx + 190, b - 56, sx + 190, b - 50);
+  ctx.fillStyle = k.c([255, 226, 90], -1); ctx.font = `900 18px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('SHOPPING', sx + 150, b - 70);
+  flag(k, sx + 320, b, 70, 'no');
+}
+function sceneNorway(k, x, b) {
+  const { ctx } = k;
+  // mountains with snow caps behind
+  for (const [mx, mh, mw] of [[x + 80, 150, 180], [x + 300, 190, 220], [x + 560, 160, 200], [x + 900, 200, 240]]) {
+    ctx.fillStyle = k.c([96, 110, 128]); ctx.beginPath(); ctx.moveTo(mx - mw / 2, b); ctx.lineTo(mx, b - mh); ctx.lineTo(mx + mw / 2, b); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = k.c([246, 248, 252]); ctx.beginPath(); ctx.moveTo(mx - mw * 0.14, b - mh * 0.72); ctx.lineTo(mx, b - mh); ctx.lineTo(mx + mw * 0.14, b - mh * 0.72); ctx.lineTo(mx + mw * 0.05, b - mh * 0.78); ctx.lineTo(mx - mw * 0.04, b - mh * 0.7); ctx.closePath(); ctx.fill();
+  }
+  water(k, x + 120, b, 360, 16); // a fjord arm
+  flag(k, x + 40, b, 70, 'no');
+  // a stave church: dark tiered roofs with dragon heads
+  const cx = x + 560, wood = [70, 46, 34], roof = [44, 34, 30];
+  ctx.fillStyle = k.c(wood); ctx.fillRect(cx - 50, b - 40, 100, 40);
+  for (let i = 0; i < 3; i++) {
+    const w = 120 - i * 34, y = b - 40 - i * 30;
+    ctx.fillStyle = k.c(roof); ctx.beginPath(); ctx.moveTo(cx - w / 2 - 8, y); ctx.lineTo(cx, y - 26); ctx.lineTo(cx + w / 2 + 8, y); ctx.closePath(); ctx.fill();
+    if (i < 2) { ctx.fillStyle = k.c(wood); ctx.fillRect(cx - w / 2 + 22, y - 30, w - 44, 30); }
+    ctx.strokeStyle = k.c(roof); ctx.lineWidth = 3;
+    line(ctx, cx - w / 2 - 8, y, cx - w / 2 - 16, y - 10); line(ctx, cx + w / 2 + 8, y, cx + w / 2 + 16, y - 10);
+  }
+  ctx.strokeStyle = k.c(roof); ctx.lineWidth = 3; line(ctx, cx, b - 126, cx, b - 142);
+  for (let i = 0; i < 4; i++) house(k, x + 700 + i * 54, b, 44, 30 + (i % 2) * 6, i % 2 ? [244, 242, 236] : [178, 52, 40], [50, 44, 44], 171 + i);
+  flag(k, x + 930, b, 70, 'no');
+  block(k, x + 980, b, 110, 54, [226, 214, 190], 181);
+}
+const ROUTE = [
+  { name: 'Linköping', road: 'E4', scene: sceneLinkoping },
+  { name: 'Arboga', road: 'E20', scene: sceneArboga },
+  { name: 'Örebro', road: 'E20', scene: sceneOrebro },
+  { name: 'Stockholm', road: 'E4', scene: sceneStockholm },
+  { name: 'Karlstad', road: 'E18', scene: sceneKarlstad },
+  { name: 'Töcksfors', road: 'E18', scene: sceneTocksfors },
+  { name: 'Norge', road: 'E18', scene: sceneNorway, border: true, ahead: 'Oslo', km: 120 }, // across the border, then back to Linköping
+];
+const CITY_COUNT = ROUTE.filter(c => !c.border).length;
+const routeIdx = i => ((i % ROUTE.length) + ROUTE.length) % ROUTE.length;
+
+function countryItem(k, x, b, r, seed, fk) {   // the countryside between cities; fk = flag kind
+  const { ctx } = k;
+  if (r < 0.34) { pine(k, x, b, 1 + hash(seed) * 0.5); pine(k, x + 22, b, 0.8 + hash(seed + 1) * 0.5); if (r < 0.18) pine(k, x + 44, b, 1.2); }
+  else if (r < 0.48) { birch(k, x, b, 1); birch(k, x + 24, b, 0.8); }
+  else if (r < 0.62) house(k, x, b, 46, 30, [178, 52, 40], [44, 40, 40], seed);   // red cottage with white corners
+  else if (r < 0.7) {                                                              // red barn
+    ctx.fillStyle = k.c([168, 46, 36]); ctx.fillRect(x, b - 38, 70, 38);
+    ctx.fillStyle = k.c([60, 52, 50]); ctx.beginPath(); ctx.moveTo(x - 4, b - 38); ctx.lineTo(x + 12, b - 56); ctx.lineTo(x + 58, b - 56); ctx.lineTo(x + 74, b - 38); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = k.c([244, 242, 236]); ctx.lineWidth = 2; ctx.strokeRect(x + 24, b - 26, 22, 26);
+    line(ctx, x + 24, b - 26, x + 46, b); line(ctx, x + 46, b - 26, x + 24, b);
+  } else if (r < 0.82) {                                                           // hay bales in plastic
+    ctx.fillStyle = k.c([240, 240, 236]);
+    for (let i = 0; i < 3; i++) { rr(ctx, x + i * 30, b - 16, 24, 16, 6); ctx.fill(); }
+  } else if (r < 0.9) { flag(k, x, b, 56, fk); house(k, x + 14, b, 40, 26, [236, 210, 130], [60, 50, 50], seed); }
+}
+
+/* Road signs, styled on real Swedish ones (they stay bright at night, like reflective signs). */
+const SIGN_BLUE = '#0b5aa6', SIGN_POST = '#8b96a3';
+function signPanel(ctx, l, y, w, h) {
+  ctx.fillStyle = SIGN_BLUE; rr(ctx, l, y, w, h, 7); ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; rr(ctx, l + 4, y + 4, w - 8, h - 8, 5); ctx.stroke();
+}
+function signPosts(ctx, l, w, y, foot) { ctx.fillStyle = SIGN_POST; ctx.fillRect(l + 12, y, 4, foot - y); ctx.fillRect(l + w - 16, y, 4, foot - y); }
+function townSign(ctx, x, foot, name) {        // the blue place-name sign at the city limit
+  ctx.font = `900 26px ${FONT}`;
+  const w = ctx.measureText(name).width + 40, h = 46, y = foot - 60 - h, l = x - w / 2;
+  signPosts(ctx, l, w, y + h, foot); signPanel(ctx, l, y, w, h);
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(name, x, y + h / 2 + 1);
+}
+function eShield(ctx, x, y, road) {            // green European-route number
+  ctx.font = `900 15px ${FONT}`;
+  const w = ctx.measureText(road).width + 14;
+  ctx.fillStyle = '#12844a'; rr(ctx, x, y, w, 24, 5); ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; rr(ctx, x + 2, y + 2, w - 4, 20, 4); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(road, x + w / 2, y + 13);
+  return w;
+}
+function directionSign(ctx, x, foot, name, road, km) {  // advance sign before the city
+  ctx.font = `800 22px ${FONT}`;
+  const dist = `${km} km`, nw = ctx.measureText(name).width, dw = ctx.measureText(dist).width;
+  ctx.font = `900 15px ${FONT}`;
+  const ew = ctx.measureText(road).width + 14;
+  const w = 12 + ew + 10 + nw + 26 + dw + 16, h = 48, y = foot - 66 - h, l = x - w / 2;
+  signPosts(ctx, l, w, y + h, foot); signPanel(ctx, l, y, w, h);
+  const sw = eShield(ctx, l + 12, y + 12, road);
+  ctx.font = `800 22px ${FONT}`; ctx.fillStyle = '#fff'; ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left'; ctx.fillText(name, l + 22 + sw, y + h / 2 + 1);
+  ctx.textAlign = 'right'; ctx.fillText(dist, l + w - 16, y + h / 2 + 1);
+}
+function mooseSign(ctx, x, foot) {              // the famous yellow moose warning triangle
+  const y = foot - 50;
+  ctx.fillStyle = SIGN_POST; ctx.fillRect(x - 2, y - 4, 4, foot - y + 4);
+  const tri = (inset, col) => {
+    ctx.fillStyle = col; ctx.beginPath();
+    ctx.moveTo(x, y - 64 + inset * 2); ctx.lineTo(x + 38 - inset * 1.7, y - inset); ctx.lineTo(x - 38 + inset * 1.7, y - inset); ctx.closePath(); ctx.fill();
+  };
+  tri(0, '#d62028'); tri(7, '#ffd23a');
+  ctx.fillStyle = '#111'; ctx.strokeStyle = '#111'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.ellipse(x - 3, y - 21, 14, 7.5, 0, 0, TAU); ctx.fill();   // body
+  ctx.beginPath(); ctx.ellipse(x + 3, y - 27, 7, 5, 0, 0, TAU); ctx.fill();       // shoulder hump
+  ctx.lineWidth = 3.5; line(ctx, x - 12, y - 17, x - 13, y - 8); line(ctx, x + 6, y - 17, x + 7, y - 8);
+  ctx.lineWidth = 4; line(ctx, x + 8, y - 26, x + 13, y - 31);                     // neck
+  ctx.beginPath(); ctx.ellipse(x + 17, y - 31, 6.5, 4, 0.35, 0, TAU); ctx.fill();  // head
+  ctx.lineWidth = 2.5; line(ctx, x + 13, y - 34, x + 8, y - 40); line(ctx, x + 8, y - 40, x + 6, y - 37);
+  line(ctx, x + 16, y - 35, x + 19, y - 41); line(ctx, x + 19, y - 41, x + 22, y - 39);
+}
+function borderSign(ctx, x, foot) {             // entering Norway
+  const w = 170, h = 50, y = foot - 60 - h, l = x - w / 2;
+  signPosts(ctx, l, w, y + h, foot); signPanel(ctx, l, y, w, h);
+  const fx = l + 16, fy = y + 14;
+  ctx.fillStyle = '#ba0c2f'; ctx.fillRect(fx, fy, 33, 23);
+  ctx.fillStyle = '#fff'; ctx.fillRect(fx + 9, fy, 7, 23); ctx.fillRect(fx, fy + 8, 33, 7);
+  ctx.fillStyle = '#00205b'; ctx.fillRect(fx + 11, fy, 3, 23); ctx.fillRect(fx, fy + 10, 33, 3);
+  ctx.font = `900 24px ${FONT}`; ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('NORGE', l + 108, y + h / 2 + 1);
+}
+function drawCar(ctx, x, y, col, dir) {
+  ctx.fillStyle = col; rr(ctx, x - 23, y - 15, 46, 13, 4); ctx.fill();
+  rr(ctx, x - 14 - dir * 3, y - 25, 26, 12, 4); ctx.fill();
+  ctx.fillStyle = 'rgba(190,230,255,.9)'; ctx.fillRect(x - 11 - dir * 3, y - 23, 9, 7); ctx.fillRect(x + 1 - dir * 3, y - 23, 9, 7);
+  ctx.fillStyle = '#1b1b22'; circle(ctx, x - 13, y - 2, 5); circle(ctx, x + 13, y - 2, 5);
+  ctx.fillStyle = dir > 0 ? '#fff6c0' : '#ff4040'; ctx.fillRect(dir > 0 ? x + 20 : x - 23, y - 12, 3, 4);
+}
+
 class JetEscape {
   constructor(view) { this.v = view; this.reset(); }
   get x() { return clamp(this.v.W * 0.24, 110, 260); }
-  get seaH() { return Math.max(46, this.v.H * 0.11); }
+  get seaH() { return Math.max(58, this.v.H * 0.13); }   // height of the ground strip with the road
+  get city() { return this.zone < 0 ? null : ROUTE[routeIdx(this.zone)]; }
+  get inNorway() { return !!(this.city && this.city.border); }
+  get overNote() {       // extra line on the game-over panel
+    if (!this.city) return 'You crashed before reaching Linköping.';
+    if (this.inNorway) return 'You flew all the way across Sweden to Norway!';
+    return `You made it to <b>${this.city.name}</b>.`;
+  }
   reset() {
-    this.state = 'idle'; this.time = 0; this.t = 0; this.scroll = 0;
+    this.state = 'idle'; this.time = 0; this.t = 0; this.scroll = -300;
+    this.zone = -1; this.border = -1; this.banner = null; this.cars = []; this.carT = 0.3;
     this.y = this.v.H * 0.45; this.vy = 0; this.flame = 0;
     this.missiles = []; this.warns = []; this.smoke = []; this.parts = []; this.texts = [];
     this.spawnT = 1.1; this.endT = 0;
@@ -357,6 +737,32 @@ class JetEscape {
     const speed = 300 + 330 * d;
     const pace = this.state === 'idle' ? 0.45 : (running ? 1 : 0.25);
     this.scroll += speed * pace * dt;
+    // which city is under the jet: a zone starts when its town sign passes the jet
+    const passS = this.scroll - (W - this.x), zi = Math.floor((passS - 60) / ZONE);
+    if (zi > this.zone) {
+      this.zone = zi;
+      if (zi >= 0 && running) {
+        const lap = Math.floor(zi / ROUTE.length), ri = routeIdx(zi), c = ROUTE[ri];
+        if (c.border) {
+          this.border = zi;
+          this.banner = { title: 'Velkommen til Norge!', sub: 'You crossed the border. Keep flying!', t: 2.8, max: 2.8 };
+          addText(this.texts, 'NORGE!', this.x + 60, this.y - 50, '#ba0c2f', 34);
+        } else {
+          const n = `City ${ri + 1} of ${CITY_COUNT}`;
+          this.banner = { title: `Välkommen till ${c.name}`, sub: lap ? `Lap ${lap + 1} · ${n}` : n, t: 2.4, max: 2.4 };
+        }
+      }
+    }
+    if (this.banner) { this.banner.t -= dt; if (this.banner.t <= 0) this.banner = null; }
+    // traffic on the road: the far lane drives our way, the near lane comes towards us
+    this.carT -= dt;
+    if (this.carT <= 0) {
+      this.carT = rand(0.7, 2);
+      const cols = ['#f4f4f0', '#c8102e', '#1f3a68', '#9aa3ad', '#2f2f36', '#e9b949'];
+      this.cars.push({ x: W + 60, lane: Math.random() < 0.5 ? 0 : 1, col: cols[(Math.random() * cols.length) | 0] });
+    }
+    for (const c of this.cars) c.x -= speed * pace * (c.lane ? 1.35 : 0.55) * dt;
+    this.cars = this.cars.filter(c => c.x > -80);
     for (const c of this.clouds) {
       c.x -= c.sp * (1 + d) * pace * dt * 2;
       if (c.x < -c.s * 3) { Object.assign(c, this.makeCloud(0)); c.x = W + c.s * 3 + rand(0, 120); }
@@ -381,7 +787,7 @@ class JetEscape {
         const px = clamp(jx, m.x - 38, m.x + 30), py = clamp(jy, m.y - 7, m.y + 7);
         if ((px - jx) ** 2 + (py - jy) ** 2 < R * R) { m.dead = true; this.crash(); break; }
       }
-      if (this.state === 'running' && (jy < 10 || jy > H - this.seaH * 0.55)) this.crash();
+      if (this.state === 'running' && (jy < 10 || jy > H - this.seaH + 4)) this.crash();  // top edge or the ground
     }
     this.missiles = this.missiles.filter(m => !m.dead && m.x > -120);
     for (const s of this.smoke) { s.life -= dt; s.r += 14 * dt; s.x += s.vx * dt; }
@@ -424,20 +830,14 @@ class JetEscape {
       ctx.globalAlpha = night; ctx.fillStyle = '#f6f2d4'; circle(ctx, mx, my, 28);
       ctx.fillStyle = rgb(mix(top, bot, 0.3)); circle(ctx, mx + 12, my - 8, 24); ctx.globalAlpha = 1;
     }
-    this.hills(ctx, seaY, 110, 0.006, this.scroll * 0.08, rgb(mix(bot, [60, 70, 120], 0.45)));
-    this.hills(ctx, seaY, 55, 0.012, this.scroll * 0.2, rgb(mix(bot, [30, 40, 80], 0.62)));
+    // forested hills far away
+    this.hills(ctx, seaY, 110, 0.006, this.scroll * 0.08, rgb(mix(bot, [46, 84, 82], 0.5)));
+    this.hills(ctx, seaY, 55, 0.012, this.scroll * 0.2, rgb(mix(bot, [30, 70, 52], 0.66)));
     const cc = rgb(mix([255, 255, 255], [150, 150, 200], night));
     for (const c of this.clouds) if (!c.near) drawCloud(ctx, c.x, c.yf * H, c.s, cc, 0.7);
+    this.drawRoute(ctx, night, seaY);
     for (const c of this.clouds) if (c.near) drawCloud(ctx, c.x, c.yf * H, c.s, cc, 0.85);
-    // sea
-    const sg = ctx.createLinearGradient(0, seaY, 0, H);
-    sg.addColorStop(0, rgb(mix([40, 150, 220], [20, 40, 100], night))); sg.addColorStop(1, rgb(mix([10, 80, 160], [8, 18, 60], night)));
-    ctx.fillStyle = sg; ctx.fillRect(0, seaY, W, H - seaY);
-    ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 3; ctx.lineCap = 'round';
-    for (let row = 0; row < 3; row++) {
-      const yy = seaY + 9 + row * 14, off = (this.scroll * (0.5 + row * 0.25)) % 60;
-      for (let x = -off; x < W + 60; x += 60) { ctx.beginPath(); ctx.moveTo(x, yy); ctx.quadraticCurveTo(x + 10, yy - 5, x + 20, yy); ctx.stroke(); }
-    }
+    this.drawGround(ctx, night, seaY);
     // action layer
     ctx.fillStyle = '#e8ecf2';
     for (const s of this.smoke) { ctx.globalAlpha = 0.5 * (s.life / s.max); circle(ctx, s.x, s.y, s.r); }
@@ -448,6 +848,70 @@ class JetEscape {
     for (const p of this.parts) { ctx.globalAlpha = clamp(p.life / p.max, 0, 1); ctx.fillStyle = p.c; circle(ctx, p.x, p.y, p.r); }
     ctx.globalAlpha = 1;
     drawTexts(ctx, this.texts);
+    this.drawLocation(ctx);
+  }
+  // city skylines and countryside (slow parallax layer)
+  drawRoute(ctx, night, base) {
+    const W = this.v.W, k = paintKit(ctx, night, this.t), sx = s => W + (s - this.scroll) * FAR;
+    const first = Math.floor((this.scroll + (-1300 - W) / FAR) / ZONE), last = Math.floor((this.scroll + 200 / FAR) / ZONE);
+    for (let i = first; i <= last; i++) {
+      for (let j = 0; j < 14; j++) {
+        const x = sx(i * ZONE + CITY_LEN + 150 + j * 115);
+        if (x > -120 && x < W + 20) countryItem(k, x, base, hash(i * 31 + j), i * 31 + j, i >= 0 && ROUTE[routeIdx(i)].border ? 'no' : 'se');
+      }
+      const x0 = sx(i * ZONE + 150);
+      if (i >= 0 && x0 < W + 20 && x0 > -1250) ROUTE[routeIdx(i)].scene(k, x0, base);
+    }
+  }
+  // grass, the road with its signs, and traffic (moves at full speed)
+  drawGround(ctx, night, gy) {
+    const { W, H } = this.v, gh = H - gy, roadTop = gy + gh * 0.36, roadBot = gy + gh * 0.82;
+    const dim = (c, n = 0.6) => rgb(mix(c, NIGHT_INK, night * n));
+    ctx.fillStyle = dim([104, 172, 76]); ctx.fillRect(0, gy, W, roadTop - gy);
+    ctx.fillStyle = dim([74, 78, 86], 0.4); ctx.fillRect(0, roadTop, W, roadBot - roadTop);
+    ctx.fillStyle = dim([86, 150, 64]); ctx.fillRect(0, roadBot, W, H - roadBot);
+    ctx.fillStyle = 'rgba(255,255,255,.75)';
+    ctx.fillRect(0, roadTop + 3, W, 2); ctx.fillRect(0, roadBot - 5, W, 2);
+    const mid = (roadTop + roadBot) / 2, off = ((this.scroll % 80) + 80) % 80;
+    for (let x = -off; x < W; x += 80) ctx.fillRect(x, mid - 1.5, 40, 3);
+    // signs along the far verge
+    const sxp = s => W + (s - this.scroll);
+    const first = Math.floor((this.scroll - W - 400) / ZONE), last = Math.floor((this.scroll + 1000) / ZONE);
+    for (let i = first; i <= last; i++) {
+      if (hash(i + 0.5) < 0.75) { const x = sxp(i * ZONE + CITY_LEN + 900); if (x > -60 && x < W + 60) mooseSign(ctx, x, roadTop + 2); }
+      if (i < 0) continue;
+      const c = ROUTE[routeIdx(i)];
+      let x = sxp(i * ZONE - 650);
+      if (x > -200 && x < W + 200) directionSign(ctx, x, roadTop + 2, c.ahead || c.name, c.road, c.km || 2);
+      x = sxp(i * ZONE + 60);
+      if (x > -150 && x < W + 150) { if (c.border) borderSign(ctx, x, roadTop + 2); else townSign(ctx, x, roadTop + 2, c.name); }
+    }
+    for (const c of this.cars) drawCar(ctx, c.x, c.lane ? roadBot - 3 : mid - 1, c.col, c.lane ? -1 : 1);
+    if (night > 0.2) {   // a dark tint over the cars so they match the evening
+      ctx.fillStyle = `rgba(22,26,64,${night * 0.35})`; ctx.fillRect(0, roadTop, W, roadBot - roadTop);
+    }
+  }
+  // "Välkommen till …" banner and the location tag in the corner
+  drawLocation(ctx) {
+    const W = this.v.W;
+    if (this.state === 'running' || this.state === 'dying') {
+      const label = this.inNorway ? '📍 Norge' : this.city ? `📍 ${this.city.name}` : 'Next: Linköping';
+      ctx.font = `800 16px ${FONT}`;
+      const w = ctx.measureText(label).width + 26;
+      ctx.fillStyle = 'rgba(8,37,77,.55)'; rr(ctx, W - w - 60, 12, w, 32, 16); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(label, W - w / 2 - 60, 29);
+    }
+    const b = this.banner;
+    if (!b) return;
+    const a = Math.min(1, b.t * 3, (b.max - b.t) * 4);   // fade in and out
+    ctx.save(); ctx.globalAlpha = clamp(a, 0, 1) * 0.88; // see-through, so missiles behind it stay visible
+    ctx.font = `900 21px ${FONT}`;
+    const w = Math.max(ctx.measureText(b.title).width, 160) + 40, h = 54, x = W / 2 - w / 2, y = 50;
+    signPanel(ctx, x, y, w, h);
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(b.title, W / 2, y + 22);
+    ctx.font = `700 12px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.fillText(b.sub, W / 2, y + 40);
+    ctx.restore();
   }
 }
 
@@ -750,8 +1214,8 @@ const GAMES = [
   {
     id: 'jet', name: 'Jet Escape', icon: '✈️', overTitle: 'Shot down!',
     art: 'linear-gradient(180deg,#5ec4ff 0%,#bfe9ff 55%,#ffd08a 100%)',
-    desc: 'Keep your fighter jet in the air and dodge the incoming missiles.',
-    howTo: 'Tap to boost your jet upward. Dodge the missiles and stay away from the sea and the top edge.',
+    desc: 'Fly your fighter jet across Sweden, from Linköping to the Norwegian border, and dodge the incoming missiles.',
+    howTo: 'Tap to boost your jet upward. Dodge the missiles and stay away from the ground and the top edge. Watch the road signs to see which city you are flying over.',
     targetTime: 60,
     theme: { hudBg: 'rgba(8,37,77,.5)', hudInk: '#ffffff', panelBg: 'linear-gradient(165deg,#f2faff,#c6e6ff)', panelInk: '#0b2a4a', panelEdge: '#ffffff', accent: '#ff7a45', accentInk: '#ffffff' },
     create: v => new JetEscape(v)
@@ -856,7 +1320,7 @@ function showGameOver() {
   if (playAll) playAll.results.push({ def: curDef, time, score: sc });
   const last = playAll && playAll.idx === playAll.queue.length - 1;
   const next = playAll ? (last ? 'to see your results' : 'for the next game') : 'to play again';
-  openOverlay(`${tag()}<h2>${curDef.overTitle}</h2><p class="howto">You survived <b>${time.toFixed(1)} seconds</b>.</p>` +
+  openOverlay(`${tag()}<h2>${curDef.overTitle}</h2><p class="howto">You survived <b>${time.toFixed(1)} seconds</b>.</p>` + (cur.overNote ? `<p class="target">${cur.overNote}</p>` : '') +
     `<div class="score">${sc}<span>/100</span></div><p class="target">${isBest && sc > 0 ? 'New best score!' : `Your best: ${best[curDef.id]}/100`}</p>` +
     `${hint(next)}<div class="row"><button class="link-btn" data-act="hub">Back to hub</button></div>`);
 }
