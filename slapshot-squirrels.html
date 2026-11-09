@@ -13,6 +13,11 @@
   Modes: 2 players on one keyboard (hot-seat), or play Red against a
   computer-controlled Blue on Easy, Normal or Hard (see AI_LEVELS).
 
+  FINAL BOSS: from round 8 the Seagull Striker (a seagull built like a
+  jet fighter) flies over at the start of every round and drops one blob of
+  explosive poop on each island. A puck that hits a poop sets off a giant
+  explosion. A player whose own island is wiped out loses.
+
   Single self-contained file: HTML + CSS + JavaScript (Canvas API).
   No external libraries or assets. Open it in any modern desktop browser.
 -->
@@ -82,6 +87,16 @@ const CONFIG = {
   BUTTON_X: 640,
   BUTTON_Y: 520,            // y of the top of the button housing (dome sits on top)
   BUTTON_RADIUS: 18,
+
+  // Final boss: the Seagull Striker
+  BOSS_AFTER_ROUNDS: 7,     // the boss first appears at the start of round BOSS_AFTER_ROUNDS + 1 (round 8)
+  BOSS_EVERY_ROUND: true,   // once it has arrived, it bombs again at the start of every round
+  BOSS_SPEED: 520,          // flying speed (px/s)
+  POOP_RADIUS: 14,          // hit radius of an explosive poop
+  POOP_CRATER_RADIUS: 95,   // hole made when a poop explodes
+  POOP_DAMAGE_RADIUS: 130,
+  POOP_MAX_DAMAGE: 50,
+  ISLAND_GONE_FRACTION: 0.1, // an island is "destroyed" when less than 10% of it is left
 };
 
 /*
@@ -190,6 +205,8 @@ function generateTerrain() {
   // Copy the alpha channel into the collision map
   const data = tctx.getImageData(0, 0, W, H).data;
   for (let i = 0; i < W * H; i++) solid[i] = data[i * 4 + 3] > 127 ? 1 : 0;
+  islandBaseArea[0] = islandArea(0);
+  islandBaseArea[1] = islandArea(1);
 }
 
 /** Draws one island centred on cx: a bumpy hill with grass on top. */
@@ -288,6 +305,36 @@ function carveCrater(cx, cy, r) {
   }
 }
 
+/** Which island (0 = left, 1 = right) an x position belongs to. */
+const islandIndexAt = x => (x < W / 2 ? 0 : 1);
+
+/** Counts the ground pixels of an island that are above the water. */
+function islandArea(index) {
+  const cx = index === 0 ? CONFIG.LEFT_ISLAND_X : CONFIG.RIGHT_ISLAND_X;
+  const x0 = Math.max(0, cx - CONFIG.ISLAND_HALF_WIDTH), x1 = Math.min(W - 1, cx + CONFIG.ISLAND_HALF_WIDTH);
+  let count = 0;
+  for (let y = 0; y < CONFIG.WATER_Y; y++) {
+    const row = y * W;
+    for (let x = x0; x <= x1; x++) count += solid[row + x];
+  }
+  return count;
+}
+
+/** Predicted share of an island left after a crater at (x, y) with radius r. */
+function islandRemainingAfter(index, x, y, r) {
+  let lost = 0;
+  for (let yy = Math.max(0, Math.floor(y - r)); yy <= Math.min(CONFIG.WATER_Y - 1, Math.ceil(y + r)); yy++) {
+    for (let xx = Math.max(0, Math.floor(x - r)); xx <= Math.min(W - 1, Math.ceil(x + r)); xx++) {
+      const dx = xx + 0.5 - x, dy = yy + 0.5 - y;
+      if (dx * dx + dy * dy <= r * r) lost += solid[yy * W + xx];
+    }
+  }
+  return (islandArea(index) - lost) / Math.max(1, islandBaseArea[index]);
+}
+
+/** Share (0..1) of an island that is still left. */
+const islandRemaining = index => islandArea(index) / Math.max(1, islandBaseArea[index]);
+
 /** Returns the y just above the first ground pixel in column x. */
 function surfaceY(x) {
   for (let y = 0; y < H; y++) if (isSolid(x, y)) return y - 1;
@@ -320,6 +367,9 @@ let flashes = [];         // explosion fireballs
 let floatTexts = [];      // "-32" damage pop-ups
 let banner = null;        // big centred message, e.g. "Blue's turn"
 let clouds = [];
+let boss = null;          // the Seagull Striker while it is on screen
+let poops = [];           // explosive poop: { x, y, vy, grounded } (falling or resting on an island)
+const islandBaseArea = [0, 0];   // ground pixels above water per island at the start of a game
 
 const keys = {};
 const mouse = { x: -100, y: -100 };
@@ -381,6 +431,8 @@ function newGame(startNow) {
   particles = [];
   flashes = [];
   floatTexts = [];
+  boss = null;
+  poops = [];
   buttonEvent = null;
   result = null;
   randomizeWind();
@@ -400,8 +452,19 @@ function beginTurn() {
   walkAccum = 0;
   for (const p of players) p.swingT = -1;
   const p = active();
-  showBanner(`${displayName(p)}'s turn`, p.color);
+  // First turn of a round: also announce how long until the final boss arrives
+  const firstTurnOfRound = turnNumber % 2 === 0;
+  showBanner(`${displayName(p)}'s turn`, p.color, firstTurnOfRound ? bossCountdownText() : null);
   if (isAI(p)) aiBeginTurn(p);
+}
+
+/** Rounds left before the boss's first appearance (0 once it has arrived). */
+const roundsUntilBoss = () => Math.max(0, CONFIG.BOSS_AFTER_ROUNDS + 1 - round);
+
+function bossCountdownText() {
+  const n = roundsUntilBoss();
+  if (n === 0) return null;
+  return n === 1 ? '1 round until the final boss appears!' : `${n} rounds until the final boss appears`;
 }
 
 /** Title-screen menu choice: start a game in that mode. */
@@ -417,6 +480,11 @@ function nextTurn() {
   if (turnNumber % 2 === 0) {          // both players have shot: new round
     round++;
     randomizeWind();
+    const bossRound = round - CONFIG.BOSS_AFTER_ROUNDS;   // 1 = the boss's first round
+    if (bossRound === 1 || (bossRound > 1 && CONFIG.BOSS_EVERY_ROUND)) {
+      startBossRun(bossRound === 1);
+      return;                          // beginTurn() runs when the boss has flown past
+    }
   }
   beginTurn();
 }
@@ -457,10 +525,12 @@ function triggerButton(loser, how) {
 /** Decides the winner and shows the game-over screen. */
 function showGameOver() {
   for (const p of players) if (!p.defeat && p.health <= 0) p.defeat = 'health';
-  const losers = players.filter(p => p.defeat);
+  // Losing your whole island overrides everything else
+  const islandless = players.filter(p => p.defeat === 'island');
+  const losers = islandless.length ? islandless : players.filter(p => p.defeat);
   result = losers.length >= 2
     ? { winner: null, losers }
-    : { winner: players.find(p => !p.defeat), losers };
+    : { winner: players.find(p => !losers.includes(p)), losers };
   state = 'gameover';
   gameOverTimer = 0;
 }
@@ -474,6 +544,8 @@ function defeatMessage(p) {
           : `${p.name} clicked the red button during their own turn!`;
       }
       return `${displayName(p)} hit the red button with a puck!`;
+    case 'island':
+      return `${displayName(p)}'s island was blown to bits by explosive bird poop!`;
     case 'water':
       return `${displayName(p)} fell into the water.`;
     default:
@@ -684,6 +756,8 @@ function touchesButton(x, y, r) {
 function puckHitTest(x, y, owner, age) {
   // The red button itself (a direct hit means the shooter loses)
   if (touchesButton(x, y, PUCK_RADIUS)) return 'button';
+  // Explosive bird poop (only poop resting on an island counts)
+  if (poopAt(x, y)) return 'poop';
   // The button's post: an ordinary obstacle
   if (x > BUTTON.postX0 - PUCK_RADIUS && x < BUTTON.postX1 + PUCK_RADIUS && y > BUTTON.housingY1) return 'post';
   // Squirrels (the shooter is ignored for a moment so the puck can leave the stick)
@@ -715,6 +789,9 @@ function resolvePuckHit(hit) {
     case 'out':                         // flew far off the side of the screen
       puck = null;
       enterSettle();
+      break;
+    case 'poop':                        // giant explosion
+      poopExplosion(poopAt(x, y));
       break;
     default:                            // post, player or terrain
       explode(x, y);
@@ -814,6 +891,20 @@ function aiPlanShot(p) {
     for (let power = 16; power <= 100; power += 2) {
       const r = simulateShot(p, aim, power, believedWind);
       if (r.type === 'button') continue;                                       // never on purpose!
+      if (r.type === 'poop') {
+        // Poop explosions are huge. Wiping out the opponent's island wins;
+        // wiping out (or nearly wiping out) its own island is never worth it.
+        const poop = poopAt(r.x, r.y);
+        const island = islandIndexAt(poop.x);
+        const left = islandRemainingAfter(island, poop.x, poop.y - 6, CONFIG.POOP_CRATER_RADIUS);
+        if (distanceToBody(p, poop.x, poop.y) < CONFIG.POOP_DAMAGE_RADIUS + 20) continue;
+        if (island === p.index && left < CONFIG.ISLAND_GONE_FRACTION + 0.2) continue;
+        const score = island === opp.index && left < CONFIG.ISLAND_GONE_FRACTION
+          ? -1000                                        // winning shot
+          : distanceToBody(opp, poop.x, poop.y) - 60;
+        if (!best || score < best.score) best = { aim, power, score };
+        continue;
+      }
       if (distanceToBody(p, r.x, r.y) < CONFIG.DAMAGE_RADIUS + 10) continue;   // don't blow itself up
       let score = distanceToBody(opp, r.x, r.y);
       if (r.type === 'water' || r.type === 'out' || r.type === 'post') score += 300;   // harmless shots
@@ -838,6 +929,293 @@ function aiAim(p, dt) {
   if (p.aim === ai.targetAim && p.power === ai.targetPower) {
     ai.aimed = true;
     ai.wait = 0.35;                       // short pause before the slap
+  }
+}
+
+/* ======================================================================
+ * 8c. FINAL BOSS: THE SEAGULL STRIKER
+ *    A seagull built like a jet fighter. From round BOSS_AFTER_ROUNDS + 1
+ *    it flies across the screen at the start of each round and drops one
+ *    blob of explosive poop on each island. A puck that hits a poop sets off
+ *    a giant explosion. A player whose island is wiped out loses.
+ * ====================================================================== */
+
+/** Picks a spot on an island's surface for a poop (not right on top of a squirrel). */
+function pickPoopSpot(islandIndex) {
+  const cx = islandIndex === 0 ? CONFIG.LEFT_ISLAND_X : CONFIG.RIGHT_ISLAND_X;
+  const hw = CONFIG.ISLAND_HALF_WIDTH;
+  for (let tries = 0; tries < 40; tries++) {
+    const x = Math.round(cx + rand(-hw + 40, hw - 40));
+    if (surfaceY(x) >= CONFIG.WATER_Y - 12) continue;                          // no ground there
+    if (players.some(p => !p.inWater && Math.abs(p.x - x) < 45)) continue;    // too close to a squirrel
+    if (poops.some(pp => Math.abs(pp.x - x) < 30)) continue;                  // already pooped on
+    return x;
+  }
+  return null;                                                                // island is (nearly) gone
+}
+
+/** Starts a bombing run. Normal turns continue once the boss has flown past. */
+function startBossRun(firstTime) {
+  state = 'boss';
+  const dir = Math.random() < 0.5 ? 1 : -1;
+  boss = { x: dir > 0 ? -400 : W + 400, y: 150, dir, t: 0, targets: [] };
+  for (const i of [0, 1]) {
+    const x = pickPoopSpot(i);
+    if (x !== null) boss.targets.push({ x, dropped: false });
+  }
+  if (firstTime) {
+    showBanner('FINAL BOSS: THE SEAGULL STRIKER!', '#ffffff',
+      'It bombs both islands with explosive poop. Hit the poop with a puck for a giant blast!');
+  } else {
+    showBanner('The Seagull Striker is back!', '#ffffff', 'More explosive poop incoming!');
+  }
+}
+
+function updateBoss(dt) {
+  boss.t += dt;
+  boss.x += boss.dir * CONFIG.BOSS_SPEED * dt;
+
+  // Drop the poop when flying over each target spot
+  for (const tg of boss.targets) {
+    if (!tg.dropped && (boss.dir > 0 ? boss.x >= tg.x : boss.x <= tg.x)) {
+      tg.dropped = true;
+      poops.push({ x: tg.x, y: boss.y + 18, vy: 60, grounded: false, fresh: true });
+    }
+  }
+
+  // Jet contrail
+  if (boss.x > -100 && boss.x < W + 100) {
+    particles.push({ x: boss.x - boss.dir * 75, y: boss.y + rand(-3, 3), vx: -boss.dir * 40, vy: 0, g: 0,
+      life: 0.6, max: 0.6, size: rand(4, 7), color: '#ffffff', smoke: true });
+  }
+
+  // Gone and all poop has landed: back to the game
+  const offscreen = boss.dir > 0 ? boss.x > W + 200 : boss.x < -200;
+  if (offscreen && poops.every(pp => pp.grounded)) {
+    boss = null;
+    beginTurn();
+  }
+}
+
+/** Poop falls like everything else: when dropped, and when the ground under it is blown away. */
+function updatePoops(dt) {
+  for (const pp of poops) {
+    if (pp.grounded) {
+      if (isSolid(pp.x, pp.y + 1)) continue;
+      pp.grounded = false;
+      pp.vy = 0;
+    }
+    pp.vy = Math.min(pp.vy + 700 * dt, 700);
+    let dist = pp.vy * dt;
+    while (dist > 0) {
+      const s = Math.min(1, dist);
+      if (isSolid(pp.x, Math.floor(pp.y) + 1)) {          // landed
+        pp.y = Math.floor(pp.y);
+        pp.grounded = true;
+        if (pp.fresh) {
+          pp.fresh = false;
+          floatTexts.push({ x: pp.x, y: pp.y - 30, text: 'SPLAT!', color: '#f4f2e6', life: 1.0 });
+          for (let i = 0; i < 10; i++) {
+            particles.push({ x: pp.x, y: pp.y - 3, vx: rand(-90, 90), vy: rand(-160, -40), g: 600,
+              life: rand(0.3, 0.6), max: 0.6, size: rand(1.5, 3), color: '#f4f2e6' });
+          }
+        }
+        break;
+      }
+      pp.y += s;
+      dist -= s;
+    }
+    if (!pp.grounded && pp.y > CONFIG.WATER_Y) {          // fizzles out in the sea
+      pp.gone = true;
+      spawnSplash(pp.x, CONFIG.WATER_Y, 10);
+    }
+  }
+  poops = poops.filter(pp => !pp.gone);
+}
+
+/** The poop (resting on the ground) touched by a puck at (x, y), or null. */
+function poopAt(x, y) {
+  return poops.find(pp => pp.grounded && Math.hypot(x - pp.x, y - (pp.y - 6)) < CONFIG.POOP_RADIUS + PUCK_RADIUS) || null;
+}
+
+/** A puck hit a poop: giant explosion, giant hole. The owner of a wiped-out island loses. */
+function poopExplosion(pp) {
+  puck = null;
+  poops = poops.filter(o => o !== pp);
+  const x = pp.x, y = pp.y - 6;
+  const island = islandIndexAt(x);
+  carveCrater(x, y, CONFIG.POOP_CRATER_RADIUS);
+
+  for (const p of players) {
+    if (p.inWater) continue;
+    const d = distanceToBody(p, x, y);
+    if (d >= CONFIG.POOP_DAMAGE_RADIUS) continue;
+    const dmg = Math.round(CONFIG.POOP_MAX_DAMAGE * (1 - d / CONFIG.POOP_DAMAGE_RADIUS));
+    if (dmg <= 0) continue;
+    p.health = Math.max(0, p.health - dmg);
+    p.hurtT = 0.9;
+    floatTexts.push({ x: p.x, y: p.y - 55, text: `-${dmg}`, color: p.color, life: 1.6 });
+  }
+
+  for (let i = 0; i < 3; i++) spawnExplosion(x + rand(-35, 35), y + rand(-30, 20));
+  flashes.push({ x, y, t: 0, scale: 2.6 });
+  floatTexts.push({ x, y: y - 70, text: 'KA-BOOM!', color: '#ffd23b', life: 1.6 });
+  shake = 24;
+
+  // Island 0 belongs to Red (player 0), island 1 to Blue (player 1)
+  if (islandRemaining(island) < CONFIG.ISLAND_GONE_FRACTION) {
+    players[island].defeat = 'island';
+    showBanner(`${players[island].name}'s island is destroyed!`, '#ff5a3a');
+  }
+  enterSettle();
+}
+
+/** The Seagull Striker: a seagull shaped like a jet fighter (drawn facing right, mirrored when flying left). */
+function drawBoss() {
+  if (!boss) return;
+  const poly = (pts, fill, stroke) => {
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+    if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1.5; ctx.stroke(); }
+  };
+
+  ctx.save();
+  ctx.translate(boss.x, boss.y + Math.sin(boss.t * 6) * 3);
+  ctx.scale(boss.dir, 1);
+
+  // Afterburner flame
+  const flame = 24 + Math.random() * 16;
+  poly([[-60, -7], [-60 - flame, 0], [-60, 7]], '#ff7a1f');
+  poly([[-60, -4], [-60 - flame * 0.6, 0], [-60, 4]], '#ffe14d');
+
+  // Far wing, tail fin
+  poly([[-4, -3], [-36, -26], [-50, -26], [-30, -3]], '#b8c0c8', '#8d969f');
+  poly([[-40, -6], [-60, -34], [-49, -34], [-28, -6]], '#d3d9df', '#8d969f');
+  poly([[-56, -29], [-60, -34], [-49, -34], [-47, -29]], '#222');            // black seagull tip
+
+  // Fuselage (the gull's body) with a grey back
+  ctx.fillStyle = '#f5f6f7';
+  ctx.strokeStyle = '#8d969f';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 62, 12, 0, 0, TAU);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#c4ccd4';
+  ctx.beginPath();
+  ctx.ellipse(-10, -6, 44, 4.5, 0, 0, TAU);
+  ctx.fill();
+  ctx.fillStyle = '#4a4f55';
+  ctx.fillRect(-63, -5, 6, 10);                                               // jet nozzle
+
+  // Cockpit canopy
+  ctx.fillStyle = 'rgba(110,185,240,0.95)';
+  ctx.beginPath();
+  ctx.ellipse(20, -9, 13, 5, 0, 0, TAU);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.fillRect(16, -12, 6, 1.5);
+
+  // Bomb pods (full of poop) under the body
+  ctx.fillStyle = '#e8e6d8';
+  ctx.beginPath();
+  ctx.ellipse(-6, 13, 9, 3.5, 0, 0, TAU);
+  ctx.ellipse(-26, 12, 8, 3, 0, 0, TAU);
+  ctx.fill();
+
+  // Near wing: swept delta with black seagull wing tips
+  poly([[14, 2], [-26, 34], [-48, 34], [-22, 3]], '#e3e7eb', '#8d969f');
+  poly([[-30, 28], [-26, 34], [-48, 34], [-44, 28]], '#222');
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(-38, 31.5, 1.6, 0, TAU);
+  ctx.fill();
+
+  // Seagull head on the nose: angry eye and a yellow beak with the red spot
+  ctx.fillStyle = '#ffffff';
+  ctx.strokeStyle = '#8d969f';
+  ctx.beginPath();
+  ctx.arc(56, -3, 12, 0, TAU);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#fff6c8';
+  ctx.beginPath();
+  ctx.arc(60, -6, 3.4, 0, TAU);
+  ctx.fill();
+  ctx.fillStyle = '#111';
+  ctx.beginPath();
+  ctx.arc(61, -6, 1.7, 0, TAU);
+  ctx.fill();
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 2.4;
+  ctx.beginPath();
+  ctx.moveTo(54, -13);
+  ctx.lineTo(66, -8);
+  ctx.stroke();
+  poly([[65, -4], [93, 1], [65, 6]], '#f2c200', '#b38f00');
+  ctx.fillStyle = '#e0321c';
+  ctx.beginPath();
+  ctx.arc(84, 2.5, 2.2, 0, TAU);
+  ctx.fill();
+  ctx.restore();
+}
+
+/** Explosive bird poop: falling drops and splats on the ground. */
+function drawPoops() {
+  for (const pp of poops) {
+    ctx.save();
+    ctx.translate(pp.x, pp.y);
+    if (!pp.grounded && pp.fresh) {
+      // Falling drop
+      ctx.fillStyle = '#f7f6ec';
+      ctx.beginPath();
+      ctx.moveTo(0, -20);
+      ctx.quadraticCurveTo(7, -6, 0, -2);
+      ctx.quadraticCurveTo(-7, -6, 0, -20);
+      ctx.fill();
+    } else {
+      // Splat with a sizzling spark (it's explosive!)
+      ctx.fillStyle = '#f4f2e6';
+      ctx.strokeStyle = '#b9b7a0';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.ellipse(0, -3, 16, 5, 0, 0, TAU);
+      ctx.arc(-6, -7, 5.5, 0, TAU);
+      ctx.arc(5, -8, 6.5, 0, TAU);
+      ctx.arc(0, -13, 5, 0, TAU);
+      ctx.fill();
+      ctx.fillStyle = '#9bb36a';
+      ctx.beginPath();
+      ctx.arc(-4, -6, 1.6, 0, TAU);
+      ctx.arc(6, -9, 1.4, 0, TAU);
+      ctx.arc(2, -3, 1.2, 0, TAU);
+      ctx.fill();
+      const flicker = 2 + Math.random() * 2.5;
+      ctx.fillStyle = Math.floor(time * 8 + pp.x) % 2 ? '#ffd23b' : '#ff5a1f';
+      ctx.beginPath();
+      ctx.arc(0, -18, flicker, 0, TAU);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+/** Small HUD line under the wind: boss countdown or boss warning. */
+function drawBossStatus(cx, cy) {
+  const n = roundsUntilBoss();
+  panel(cx - 120, cy - 13, 240, 26);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 13px system-ui, sans-serif';
+  if (n > 0) {
+    ctx.fillStyle = n <= 3 ? '#ffb36b' : '#ffffff';
+    ctx.fillText(`Final boss in ${n} round${n === 1 ? '' : 's'}`, cx, cy + 1);
+  } else {
+    ctx.fillStyle = '#ff7a6b';
+    ctx.fillText('FINAL BOSS: the Seagull Striker', cx, cy + 1);
   }
 }
 
@@ -888,7 +1266,7 @@ function updateEffects(dt) {
   for (const t of floatTexts) { t.y -= 30 * dt; t.life -= dt; }
   floatTexts = floatTexts.filter(t => t.life > 0);
 
-  if (banner) { banner.t += dt; if (banner.t > 1.6) banner = null; }
+  if (banner) { banner.t += dt; if (banner.t > banner.duration) banner = null; }
   shake = Math.max(0, shake - 30 * dt);
 
   // Clouds drift with the wind
@@ -899,8 +1277,9 @@ function updateEffects(dt) {
   }
 }
 
-function showBanner(text, color) {
-  banner = { text, color, t: 0 };
+/** Big centred message with an optional second line (shown longer). */
+function showBanner(text, color, sub = null) {
+  banner = { text, color, sub, t: 0, duration: sub ? 2.8 : 1.6 };
 }
 
 /* ======================================================================
@@ -911,6 +1290,7 @@ function update(dt) {
   updateEffects(dt);
 
   if (state !== 'title') {
+    updatePoops(dt);
     for (const p of players) {
       updatePlayerPhysics(p, dt);
       if (p.hurtT > 0) p.hurtT -= dt;
@@ -926,13 +1306,14 @@ function update(dt) {
     case 'flight': updatePuck(dt); break;
     case 'settle': {
       settleTimer += dt;
-      const calm = players.every(p => p.grounded || p.inWater);
+      const calm = players.every(p => p.grounded || p.inWater) && poops.every(pp => pp.grounded);
       if ((settleTimer > 1.0 && calm && particles.length < 10) || settleTimer > 4) {
         if (players.some(p => p.defeat || p.health <= 0)) showGameOver();
         else nextTurn();
       }
       break;
     }
+    case 'boss':   updateBoss(dt); break;
     case 'button':
       buttonEvent.t += dt;
       if (buttonEvent.t > 2.4) showGameOver();
@@ -1343,13 +1724,13 @@ function drawPuck() {
 function drawEffects() {
   for (const f of flashes) {
     const k = f.t / 0.35;
-    const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, 20 + k * 60);
+    const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, (20 + k * 60) * (f.scale || 1));
     g.addColorStop(0, `rgba(255,250,210,${1 - k})`);
     g.addColorStop(0.5, `rgba(255,160,40,${0.8 * (1 - k)})`);
     g.addColorStop(1, 'rgba(255,80,0,0)');
     ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.arc(f.x, f.y, 20 + k * 60, 0, TAU);
+    ctx.arc(f.x, f.y, (20 + k * 60) * (f.scale || 1), 0, TAU);
     ctx.fill();
   }
   for (const pt of particles) {
@@ -1458,7 +1839,7 @@ function drawHUD() {
   ctx.textBaseline = 'middle';
   ctx.font = 'bold 17px system-ui, sans-serif';
   ctx.fillStyle = '#fff';
-  const phaseName = { move: 'Move', aim: 'Aim', swing: 'Shoot!', flight: 'Puck in the air', settle: '...', button: '!!!', gameover: '' }[state] || '';
+  const phaseName = { move: 'Move', aim: 'Aim', swing: 'Shoot!', flight: 'Puck in the air', settle: '...', boss: 'Incoming!', button: '!!!', gameover: '' }[state] || '';
   // "Round N · <Name> · <Phase>", with the name in team colour, centred as a whole
   const parts = [
     [`Round ${round} · `, '#fff'],
@@ -1474,6 +1855,7 @@ function drawHUD() {
     tx += ctx.measureText(text).width;
   }
   drawWind(W / 2, 86);
+  drawBossStatus(W / 2, 132);
 
   // Bottom panel: movement bar or angle/power
   const bx = W / 2 - 220, by = H - 74;
@@ -1523,7 +1905,7 @@ function drawHUD() {
 
   // Turn banner
   if (banner) {
-    const a = banner.t < 1.2 ? 1 : 1 - (banner.t - 1.2) / 0.4;
+    const a = banner.t < banner.duration - 0.4 ? 1 : (banner.duration - banner.t) / 0.4;
     ctx.globalAlpha = clamp(a, 0, 1);
     ctx.font = 'bold 44px system-ui, sans-serif';
     ctx.textAlign = 'center';
@@ -1533,6 +1915,13 @@ function drawHUD() {
     ctx.strokeText(banner.text, W / 2, 200);
     ctx.fillStyle = banner.color;
     ctx.fillText(banner.text, W / 2, 200);
+    if (banner.sub) {
+      ctx.font = 'bold 26px system-ui, sans-serif';
+      ctx.lineWidth = 5;
+      ctx.strokeText(banner.sub, W / 2, 248);
+      ctx.fillStyle = '#ffd23b';
+      ctx.fillText(banner.sub, W / 2, 248);
+    }
     ctx.globalAlpha = 1;
   }
 }
@@ -1575,10 +1964,11 @@ function drawTitle() {
     ['Aim phase', '↑ / ↓ change angle, ← / → change power, Space to shoot'],
     ['Win by', 'reducing the other squirrel to 0 HP or knocking them into the water'],
     ['Never', 'hit the red button with a puck, or click it. You lose instantly.'],
+    [`Round ${CONFIG.BOSS_AFTER_ROUNDS + 1}`, 'a final boss bombs the islands with explosive poop. Lose your whole island and you lose!'],
   ];
   ctx.font = '17px system-ui, sans-serif';
   lines.forEach(([k, v], i) => {
-    const y = 215 + i * 34;
+    const y = 205 + i * 33;
     ctx.textAlign = 'right';
     ctx.fillStyle = i === 3 ? '#ff6b6b' : '#9fe0ff';
     ctx.font = 'bold 17px system-ui, sans-serif';
@@ -1672,12 +2062,14 @@ function render() {
   drawSky();
   ctx.drawImage(terrainCanvas, 0, 0);
   drawButton();
+  drawPoops();
   for (const p of players) drawSquirrel(p);
   if (state === 'aim') drawAimGuide(active());
   if (['move', 'aim', 'swing'].includes(state)) drawActiveMarker(active());
   drawPuck();
   drawWater();
   drawEffects();
+  drawBoss();
   ctx.restore();
 
   if (state === 'title') {
