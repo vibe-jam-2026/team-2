@@ -12,9 +12,10 @@
   * All JavaScript lives inside one private function scope, so it creates no global variables.
   * Uses no localStorage/cookies; best scores last for the session only.
 
-  ADDING GAME 3 LATER:
-  Write a class with the same shape as JetEscape / IceBrawl (reset, start, action, update, draw,
-  plus .time and .state), then replace the locked placeholder entry in the GAMES list near the bottom.
+  GAME 3 (Slapshot Squirrels) is its own page, slapshot-squirrels.html; its card in the GAMES list
+  links there (href) and is left out of the survival score and "Play all games".
+  To add a framework game instead: write a class with the same shape as JetEscape / IceBrawl
+  (reset, start, action, update, draw, plus .time and .state) and add it to the GAMES list.
 -->
 <style>
 :root{
@@ -766,12 +767,14 @@ const GAMES = [
     create: v => new IceBrawl(v)
   },
   {
-    id: 'game3', name: 'Game 3', icon: '🔒', locked: true,
-    art: 'linear-gradient(180deg,#3a2a66,#24154d)',
-    desc: 'Coming soon. A new survival challenge is on its way.'
+    // Game 3 is a separate two-player page, so the card just links to it
+    // (it is not part of the survival score or "Play all games").
+    id: 'squirrels', name: 'Slapshot Squirrels', icon: '🐿️', href: 'slapshot-squirrels.html',
+    art: 'linear-gradient(180deg,#5fb3ea 0%,#d6efff 62%,#2f7fcf 62%,#16407a 100%)',
+    desc: 'Two-player artillery: slap exploding pucks at your rival across the water. Never touch the red button.'
   }
 ];
-const available = () => GAMES.filter(g => !g.locked);
+const available = () => GAMES.filter(g => !g.locked && !g.href);   // games that use the shared survival framework
 
 /* =====================================================================
    FRAMEWORK — hub, shared HUD, overlays, input, scoring
@@ -819,9 +822,11 @@ function renderHub() {
     b.style.setProperty('--art', g.art);
     const sc = best[g.id] || 0;
     b.innerHTML = `<div class="art">${g.icon}</div><div class="body"><span class="num">Game ${i + 1}</span><h3>${g.name}</h3><p>${g.desc}</p>` +
-      (g.locked ? `<div class="best">Locked</div>` :
+      (g.href ? `<div class="best"><span>2 players · Opens the game</span></div>` :
+       g.locked ? `<div class="best">Locked</div>` :
         `<div class="best"><span>Best</span><div class="bar"><i style="width:${sc}%"></i></div><span>${sc}/100</span></div>`) + `</div>`;
     if (g.locked) b.setAttribute('aria-disabled', 'true');
+    else if (g.href) b.addEventListener('click', () => { window.location.href = g.href; });
     else b.addEventListener('click', () => { playAll = null; startGame(g); });
     cards.appendChild(b);
   });
