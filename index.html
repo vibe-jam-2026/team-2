@@ -1022,8 +1022,8 @@ const FP = {
   PUNCH_HIT: 0.1, PUNCH_LEN: 0.26, PUNCH_RECOVER: 0.12, PUNCH_COST: 18,
   STAM_REGEN: 20, BLOCK_DRAIN: 7,
   PERFECT: 0.12, GOOD: 0.4, WEAK: 1.2,     // how long a block has been held: perfect → good → weak → guard break
-  REGEN: 0.5, KO_BONUS: 10, KO_HEAL: 20,
-  DMG: { hit: 8, counter: 13, stuff: 10 },
+  HP: 150, REGEN: 0.6, KO_BONUS: 10, KO_HEAL: 30,
+  DMG: { hit: 7, glance: 4, counter: 13, stuff: 10 },
   ATK: {
     jab:   { wind: [0.62, 0.42], depth: 0.6,  dmg: 12, color: '#ffd166', name: 'JAB!' },
     hook:  { wind: [1.0, 0.7],   depth: 1,    dmg: 26, color: '#ff3b3b', name: 'HOOK!' },
@@ -1037,17 +1037,16 @@ const RIVALS = [
   { jersey: '#f77f00', stripe: '#14172a', helmet: '#d45d00' },
   { jersey: '#22252f', stripe: '#e63946', helmet: '#16161c' }
 ];
-/* The opponents, in order. Beat all four to win.
+/* The opponents, in order: a rival skater, then the final boss, then the final final boss. Beat all three to win.
    hp: health · diff/ramp: starting difficulty and how fast it climbs during the fight
    react: chance to block a punch to its open side · dmg: damage multiplier · speed: wind-up time multiplier
    hook: share of hooks vs jabs · feint/combo: how often it fakes or chains · parry: chance to parry a punch into its guard
    smart: how much it guards the hand you favour */
 const ROSTER = [
-  { kind: 'skater', label: 'ROUND 1', hp: 90, diff: 0, ramp: 0.25, react: 0.22, dmg: 0.75, speed: 1.1, hook: 0.5, feint: 0.6, combo: 0.5, parry: 0.12, smart: 0.2, col: 0 },
-  { kind: 'skater', label: 'ROUND 2', hp: 100, diff: 0.1, ramp: 0.3, react: 0.25, dmg: 0.85, speed: 1.05, hook: 0.5, feint: 0.8, combo: 0.7, parry: 0.14, smart: 0.3, col: 1 },
-  { kind: 'trump', label: 'FINAL BOSS', name: 'TRUMP', hp: 150, diff: 0.3, ramp: 0.5, react: 0.34, dmg: 1.15, speed: 1.1, hook: 0.7, feint: 1, combo: 0.9, parry: 0.18, smart: 0.4,
+  { kind: 'skater', label: 'RIVAL', hp: 90, diff: 0, ramp: 0.25, react: 0.22, dmg: 0.75, speed: 1.1, hook: 0.5, feint: 0.6, combo: 0.5, parry: 0.12, smart: 0.2, col: 0 },
+  { kind: 'trump', label: 'FINAL BOSS', name: 'TRUMP', hp: 170, diff: 0.3, ramp: 0.5, react: 0.45, dmg: 1.3, speed: 1.1, hook: 0.7, feint: 1, combo: 0.9, parry: 0.18, smart: 0.4,
     col: { jersey: '#1f2a44', stripe: '#ffffff', helmet: '#1f2a44', skin: '#f2a65a' } },
-  { kind: 'kim', label: 'FINAL FINAL BOSS', name: 'KIM JONG UN', hp: 200, diff: 0.55, ramp: 0.6, react: 0.48, dmg: 1.3, speed: 0.85, hook: 0.35, feint: 1.5, combo: 1.8, parry: 0.28, smart: 0.6,
+  { kind: 'kim', label: 'FINAL FINAL BOSS', name: 'KIM JONG UN', hp: 250, diff: 0.55, ramp: 0.6, react: 0.6, dmg: 1.5, speed: 0.85, hook: 0.35, feint: 1.5, combo: 1.8, parry: 0.28, smart: 0.6,
     col: { jersey: '#2b2d33', stripe: '#2b2d33', helmet: '#16161c', skin: '#f1d2b4' } }
 ];
 const TRUMP_LINES = ['SAD!', "YOU'RE FIRED!", 'TREMENDOUS!', 'HUGE!'];
@@ -1059,11 +1058,11 @@ class IceBrawlFP extends IceBrawl {
   get iceY() { return this.v.H * 0.5; }
   get feetY() { return this.v.H * 0.74; }
   get k() { return this.v.H / 480; }
-  get meter() { return this.balance / 100; }
+  get meter() { return this.balance / FP.HP; }
   get diff() { const p = this.e.p; return clamp(p.diff + this.e.ft / 60 * p.ramp, 0, 1); }
   reset() {
     super.reset();
-    this.bonus = 0; this.round = 1; this.kos = 0; this.combo = 0; this.touch = !!this.touch; this.stamina = 100; this.slow = 0; this.flash = 0; this.fall = 0;
+    this.balance = FP.HP; this.bonus = 0; this.round = 1; this.kos = 0; this.combo = 0; this.touch = !!this.touch; this.stamina = 100; this.slow = 0; this.flash = 0; this.fall = 0;
     this.hands = {}; this.held = {};
     for (const s of SIDES) { this.hands[s] = { st: 'rest', t: 0, bt: 0, stunT: 0, resolved: false, pos: null }; this.held[s] = new Set(); }
     this.pointers = new Map(); this.usage = { L: 0, R: 0 }; this.lastPunches = [];
@@ -1072,7 +1071,7 @@ class IceBrawlFP extends IceBrawl {
   newRival() {
     const p = ROSTER[this.round - 1];
     const col = typeof p.col === 'number' ? Object.assign({}, RIVALS[p.col], { skin: SKINS[(Math.random() * SKINS.length) | 0] }) : p.col;
-    return { p, kind: p.kind, ft: 0, mode: 'guard', modeT: 0, gapT: 1.3, guard: Math.random() < 0.5 ? 'L' : 'R', guardT: rand(0.8, 1.6),
+    return { p, kind: p.kind, ft: 0, guardSince: -1, guardTo: null, guardDelay: 0, lastHit: null, mode: 'guard', modeT: 0, gapT: 1.3, guard: Math.random() < 0.5 ? 'L' : 'R', guardT: rand(0.8, 1.6),
       hp: p.hp, maxHp: p.hp, atk: null, combo: 0, punish: null, flinch: 0, flinchDir: 1, drop: 0,
       col,
       fist: { L: null, R: null } };
@@ -1120,21 +1119,26 @@ class IceBrawlFP extends IceBrawl {
     if (E.mode === 'tell') {
       // only a slow hook can be cut off, and only early in its wind-up; otherwise the other hand guards
       if (s === E.atk.side && E.atk.type === 'hook' && E.atk.prog < 0.5) { this.hitRival(FP.DMG.stuff, s, 'STUFFED!', '#ffcf4a'); if (E.mode === 'tell') { E.mode = 'flinch'; E.modeT = 0.4; E.combo = 0; } return; }
-      return this.blocked(s, Math.random() < 0.3);
+      if (s === E.atk.side) return this.hitRival(FP.DMG.glance, s, 'POW!', '#ffcf4a');   // that arm is pulled back, not guarding: a glancing hit, but you still eat the punch
+      return this.blocked(s, Math.random() < E.p.parry);
     }
     if (E.mode === 'strike' && s === E.atk.side) return this.hitRival(FP.DMG.hit, s, 'POW!', '#ffcf4a');   // its punching arm is still out
+    if (E.mode === 'flinch') {                       // still reeling: the other hand follows up for a quick 1-2
+      if (s !== E.lastHit) return this.hitRival(FP.DMG.hit * 0.75, s, 'POW!', '#ffcf4a');
+      return this.blocked(s, false);
+    }
     if (E.mode !== 'guard') return this.blocked(s, false);
-    // guarding: the guarded side blocks, the open side may get a late reaction
+    // guarding: only a guard that is up and settled blocks; the open side always gets hit
     const spam = this.lastPunches.length >= 3 && this.lastPunches.slice(-3).every(x => x === s);
-    if (s === E.guard) return this.blocked(s, spam || Math.random() < E.p.parry);
-    const habit = this.usage[s] / (this.usage.L + this.usage.R + 1);
-    const react = clamp(E.p.react + 0.15 * this.diff + habit * 0.25, 0, 0.85);
-    if (Math.random() < react) { E.guard = s; E.guardT = rand(0.6, 1.4); return this.blocked(s, false); }
+    if (s === E.guard && this.t - E.guardSince > 0.15) return this.blocked(s, spam || Math.random() < E.p.parry);
     this.hitRival(FP.DMG.hit, s, 'POW!', '#ffcf4a');
+    // it learns: after a visible delay it may move its guard to where you just hit it
+    const habit = this.usage[s] / (this.usage.L + this.usage.R + 1);
+    if (Math.random() < clamp(E.p.react + 0.15 * this.diff + habit * 0.25, 0, 0.85)) { E.guardTo = s; E.guardDelay = rand(0.15, 0.3); }
   }
   hitRival(dmg, s, txt, col) {
     const E = this.e, L = this.layout();
-    E.hp -= dmg; E.flinch = 1; E.flinchDir = sgn(s);
+    E.hp -= dmg; E.flinch = 1; E.flinchDir = sgn(s); E.lastHit = s;
     if (E.kind === 'trump' && Math.random() < 0.15 && E.hp > 0) addText(this.texts, 'FAKE NEWS!', L.cx - sgn(s) * 90 * L.k, L.head - 90 * L.k, '#ffffff', 24);
     if (E.mode === 'guard') { E.mode = 'flinch'; E.modeT = 0.22; }
     addText(this.texts, txt, L.cx + sgn(s) * 70 * L.k, L.head - 40 * L.k, col, txt === 'POW!' ? 32 : 36);
@@ -1150,13 +1154,13 @@ class IceBrawlFP extends IceBrawl {
     } else {
       h.st = 'recoil'; h.t = 0;
       addText(this.texts, 'BLOCKED', L.cx + sgn(s) * 60 * L.k, L.head - 30 * L.k, '#c9d3de', 22);
-      if (E.mode === 'guard' && Math.random() < 0.4) { E.punish = s; E.gapT = Math.min(E.gapT, 0.1); }   // blocked punches invite a quick counter
+      if (E.mode === 'guard' && Math.random() < 0.6) { E.punish = s; E.gapT = Math.min(E.gapT, 0.1); }   // blocked punches invite a quick counter
     }
   }
   koRival() {
     const E = this.e, { W, H } = this.v;
     E.hp = 0; E.mode = 'ko'; E.modeT = 2.6; E.combo = 0;
-    this.kos++; this.bonus += FP.KO_BONUS; this.balance = Math.min(100, this.balance + FP.KO_HEAL);
+    this.kos++; this.bonus += FP.KO_BONUS; this.balance = Math.min(FP.HP, this.balance + FP.KO_HEAL);
     this.cheer = 1; this.shake = 1;
     addText(this.texts, 'KNOCKOUT!', W / 2, H * 0.3, '#ffcf4a', 48);
     addText(this.texts, `+${FP.KO_BONUS}s`, W / 2, H * 0.42, '#7dffb0', 30);
@@ -1166,8 +1170,13 @@ class IceBrawlFP extends IceBrawl {
   gap() { const d = this.diff; return (1.2 - 0.6 * d) + Math.random() * (0.7 - 0.35 * d); }
   pickGuard() {
     const E = this.e, u = this.usage, smart = E.p.smart;
-    E.guard = Math.random() < lerp(0.5, (u.L + 0.5) / (u.L + u.R + 1), smart) ? 'L' : 'R';   // guards the side you punch most
+    this.setGuard(Math.random() < lerp(0.5, (u.L + 0.5) / (u.L + u.R + 1), smart) ? 'L' : 'R');   // guards the side you punch most
     E.guardT = rand(0.7, 1.7);
+  }
+  setGuard(s) {
+    const E = this.e;
+    if (E.guard !== s) E.guardSince = this.t;                            // a guard on the move doesn't block yet
+    E.guard = s;
   }
   nextAttack() {
     const E = this.e, d = this.diff, r = Math.random();
@@ -1184,7 +1193,7 @@ class IceBrawlFP extends IceBrawl {
   startAttack(type, side, speed = 1) {
     const A = FP.ATK[type], d = this.diff, dur = lerp(A.wind[0], A.wind[1], d) * speed * this.e.p.speed;
     const hitch = type === 'hook' && this.e.ft > 6 && Math.random() < 0.2 + 0.3 * d;   // freezes mid wind-up to bait an early block
-    const E = this.e; E.mode = 'tell'; E.guard = otherSide(side);
+    const E = this.e; E.mode = 'tell'; E.guardTo = null; this.setGuard(otherSide(side));
     E.atk = { type, side, el: 0, prog: 0, dur, hitchAt: hitch ? dur * rand(0.4, 0.65) : -1, hitchLen: hitch ? rand(0.2, 0.4) : 0 };
   }
   impact() {
@@ -1216,7 +1225,7 @@ class IceBrawlFP extends IceBrawl {
     this.state = 'winning'; this.endT = 3.5; this.cheer = 1; this.won = true; this.releaseAll();
     this.bonus = Math.max(this.bonus, Math.ceil(60 - this.time));          // beating everyone is a perfect score
     this.overTitle = 'Champion of the ice!';
-    this.overText = `You beat all ${ROSTER.length} rivals in <b>${this.time.toFixed(1)} seconds</b>, including both final bosses.`;
+    this.overText = `You knocked out your rival, Trump and Kim Jong Un in <b>${this.time.toFixed(1)} seconds</b>.`;
     addText(this.texts, 'CHAMPION!', W / 2, H * 0.3, '#ffcf4a', 56); this.texts[this.texts.length - 1].life = this.texts[this.texts.length - 1].max = 3;
   }
   hurt(d) {
@@ -1232,6 +1241,7 @@ class IceBrawlFP extends IceBrawl {
     switch (E.mode) {
       case 'guard':
         E.ft += dt; E.guardT -= dt; if (E.guardT <= 0) this.pickGuard();
+        if (E.guardTo && (E.guardDelay -= dt) <= 0) { this.setGuard(E.guardTo); E.guardTo = null; E.guardT = rand(0.8, 1.6); }
         E.gapT -= dt; if (E.gapT <= 0) this.nextAttack();
         break;
       case 'tell': {
@@ -1271,7 +1281,7 @@ class IceBrawlFP extends IceBrawl {
       if (this.cd <= 0) { this.state = 'running'; this.cheer = 1; addText(this.texts, 'FIGHT!', W / 2, H * 0.34, '#ffcf4a', 46); }
     } else if (this.state === 'running') {
       this.time += dt;
-      this.balance = Math.min(100, this.balance + FP.REGEN * dt);
+      this.balance = Math.min(FP.HP, this.balance + FP.REGEN * dt);
       const blocking = SIDES.filter(s => this.hands[s].st === 'block').length;
       this.stamina = clamp(this.stamina + (blocking ? -FP.BLOCK_DRAIN * blocking : FP.STAM_REGEN) * dt, 0, 100);
       const decay = Math.exp(-dt * 0.5); this.usage.L *= decay; this.usage.R *= decay;
@@ -1674,8 +1684,8 @@ const GAMES = [
   {
     id: 'brawlfp', name: 'Ice Brawl: Face-Off', icon: '👊', overTitle: 'Down on the ice!', meterLabel: 'Balance',
     art: 'radial-gradient(circle at 50% 38%,#e63946 0 22%,transparent 23%),linear-gradient(180deg,#1b2440 0%,#2a3456 55%,#dcefff 55%,#f4faff 100%)',
-    desc: 'First-person hockey fight. Punch and block with each hand, knock out two rivals, then Trump and Kim Jong Un.',
-    howTo: '<b>Q</b>/<b>E</b> punch, hold <b>A</b>/<b>D</b> to block (touch: top half punches, bottom half blocks). Block the side the punch comes from just before it lands for a <b>PERFECT</b> and a free counter. Long blocks get weak. Beat two rivals, then the final boss and the final final boss. Each knockout adds <b>+10s</b>.',
+    desc: 'First-person hockey fight. Punch and block with each hand, knock out your rival, then Trump and Kim Jong Un.',
+    howTo: '<b>Q</b>/<b>E</b> punch, hold <b>A</b>/<b>D</b> to block (touch: top half punches, bottom half blocks). Block the side the punch comes from just before it lands for a <b>PERFECT</b> and a free counter. Long blocks get weak. Beat your rival, then the final boss and the final final boss. Each knockout adds <b>+10s</b>.',
     targetTime: 60,
     theme: { hudBg: 'rgba(14,22,44,.62)', hudInk: '#eaf4ff', panelBg: 'linear-gradient(165deg,#ffffff,#dcecf8)', panelInk: '#13223f', panelEdge: '#2f6fe0', accent: '#2f6fe0', accentInk: '#ffffff' },
     create: v => new IceBrawlFP(v)
