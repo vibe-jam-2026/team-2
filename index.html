@@ -14,6 +14,7 @@
 
   GAME 3 (Slapshot Squirrels) is its own page, slapshot-squirrels.html; its card in the GAMES list
   links there (href) and is left out of the survival score and "Play all games".
+  GAME 4 (Ice Brawl Pro) is a harder, skill-based remix of Ice Brawl: class IceBrawlPro extends IceBrawl.
   To add a framework game instead: write a class with the same shape as JetEscape / IceBrawl
   (reset, start, action, update, draw, plus .time and .state) and add it to the GAMES list.
 -->
@@ -172,7 +173,7 @@ kbd{font:inherit;font-weight:800;font-size:.82rem;padding:3px 9px;border-radius:
   <div class="wrap">
     <div class="marquee"><span class="bulbs"></span>
       <h1>Survival Hub</h1>
-      <p>Three tiny games, one button. Stay alive as long as you can.</p>
+      <p>Four tiny games, one button. Stay alive as long as you can.</p>
     </div>
     <div class="overall">
       <div class="ring" id="hubRing"><b id="hubScore">0</b></div>
@@ -745,6 +746,268 @@ class IceBrawl {
 }
 
 /* =====================================================================
+   GAME 4 — ICE BRAWL PRO  (harder, skill-based remix of Ice Brawl)
+   Reuses Ice Brawl's arena and skaters. The skill is in the timing:
+   short ducks, perfect dodges, readable jabs / haymakers / feints,
+   counters that drain the bot's stamina, knockdowns and rounds.
+   ===================================================================== */
+/* Tuning for Ice Brawl. Each wind-up time goes from [easy, hard] as the fight heats up. */
+const BRAWL = {
+  DUCK: 0.22,         // a duck only lasts this long, so timing matters
+  PERFECT: 0.08,      // ducking this close to impact is a PERFECT dodge
+  WOBBLE: 0.5, WOBBLE_COST: 7,
+  REGEN: 0.6,         // balance regained per second
+  KD_HEAL: 15,        // balance back for knocking the bot down
+  ATK: {
+    jab:   { wind: [0.56, 0.36], depth: 0.5,  dmg: 16, color: '#ffd166' },
+    hay:   { wind: [1.05, 0.7],  depth: 1,    dmg: 34, color: '#ff3b3b' },
+    feint: { wind: [0.9, 0.64],  depth: 0.62, dmg: 0,  color: '#ff3b3b' }   // looks like a haymaker, but the arm stops short
+  }
+};
+
+class IceBrawlPro extends IceBrawl {
+  get diff() { return clamp(this.time / 60 + (this.round - 1) * 0.12, 0, 1); }
+  reset() {
+    this.state = 'idle'; this.time = 0; this.t = 0; this.cd = 0; this.balance = 100; this.endT = 0;
+    this.round = 1; this.streak = 0; this.slow = 0;
+    this.p = { mode: 'ready', modeT: 0, buffer: false, pose: newPose() };
+    this.b = { mode: 'idle', modeT: 0, atk: null, combo: 0, hp: 100, maxHp: 100, perfect: false, openMax: 1, pose: newPose() };
+    this.gloves = []; this.texts = []; this.cheer = 0; this.shake = 0; this.ref = null; this.refTarget = 0;
+    const cols = ['#2f6fe0', '#e63946', '#ffd166', '#ffffff', '#8ecae6', '#f4a261', '#2a9d8f', '#b5179e'];
+    this.crowd = [];
+    for (let row = 0; row < 5; row++) for (let i = 0; i < 34; i++) {
+      this.crowd.push({ x: (i + rand(0.1, 0.9)) / 34, row, c: cols[(Math.random() * cols.length) | 0], k: SKINS[(Math.random() * SKINS.length) | 0], ph: rand(0, 6), sign: Math.random() < 0.05 });
+    }
+    this.scratches = []; for (let i = 0; i < 16; i++) this.scratches.push({ x: Math.random(), y: Math.random(), w: rand(30, 90), a: rand(-0.2, 0.2) });
+  }
+  start() { this.state = 'countdown'; this.cd = 3; }
+  action() {
+    if (this.state !== 'running') return;
+    const P = this.p, B = this.b;
+    if (P.mode !== 'ready' && P.mode !== 'evade') return;          // hurt, wobbling or mid-duck: committed
+    if (B.mode === 'open') { this.counter(); return; }
+    if (B.mode === 'whiff' && B.combo === 0) { P.buffer = true; return; }   // early counter press still counts
+    P.mode = 'duck'; P.modeT = BRAWL.DUCK;
+  }
+  hurt(dmg) {
+    this.balance -= dmg; this.streak = 0;
+    if (this.balance <= 0.5) { this.balance = 0; this.knockout(); return true; }
+    return false;
+  }
+  startAttack(type, combo, speed = 1) {
+    const B = this.b, A = BRAWL.ATK[type], d = this.diff;
+    const dur = lerp(A.wind[0], A.wind[1], d) * speed;
+    const hitch = type === 'hay' && this.time > 8 && Math.random() < 0.25 + 0.35 * d;   // freezes mid wind-up to bait early ducks
+    B.mode = 'tell'; B.combo = combo;
+    B.atk = { type, el: 0, prog: 0, dur, hitchAt: hitch ? dur * rand(0.45, 0.7) : -1, hitchLen: hitch ? rand(0.18, 0.4) : 0 };
+  }
+  nextAttack() {
+    const d = this.diff, r = Math.random();
+    const feintP = this.time > 8 ? 0.12 + 0.2 * d : 0;
+    const type = r < feintP ? 'feint' : r < feintP + 0.38 ? 'jab' : 'hay';
+    const combo = type !== 'feint' && this.time > 12 && Math.random() < 0.18 + 0.32 * d ? (Math.random() < d * 0.6 ? 2 : 1) : 0;
+    this.startAttack(type, combo);
+  }
+  feint() {
+    const B = this.b, P = this.p;
+    B.mode = 'feint'; B.modeT = 0.2;
+    addText(this.texts, 'FAKE!', this.bx + 20, this.feetY - 175, '#ff9de0', 28);
+    if (P.mode === 'duck') addText(this.texts, 'BAITED!', this.px - 10, this.feetY - 140, '#ff9de0', 24);
+  }
+  strike() {
+    const B = this.b, P = this.p, A = BRAWL.ATK[B.atk.type];
+    if (P.mode === 'duck') {
+      const perfect = BRAWL.DUCK - P.modeT <= BRAWL.PERFECT;     // ducked at the last moment
+      this.streak++; B.perfect = perfect;
+      P.mode = 'evade'; P.modeT = 0.22; B.mode = 'whiff'; B.modeT = 0.14;
+      if (perfect) { this.slow = 0.22; this.cheer = Math.max(this.cheer, 0.6); addText(this.texts, 'PERFECT!', this.px - 10, this.feetY - 180, '#7dffb0', 32); }
+      else addText(this.texts, 'WHIFF!', this.px - 10, this.feetY - 175, '#9fe0ff', 28);
+      return;
+    }
+    P.mode = 'hurt'; P.modeT = 0.45; P.buffer = false; this.shake = A.dmg > 20 ? 1 : 0.6;
+    B.mode = 'strike'; B.modeT = 0.3;
+    addText(this.texts, A.dmg > 20 ? 'BONK!' : 'JAB!', this.px - 6, this.feetY - 160, '#ff6b6b', A.dmg > 20 ? 38 : 28);
+    this.hurt(A.dmg);
+  }
+  counter() {
+    const B = this.b, P = this.p;
+    const dmg = (B.perfect ? 24 : 13) * (1 + Math.min(this.streak, 10) * 0.06);
+    B.hp -= dmg; P.mode = 'counter'; P.modeT = 0.35; P.buffer = false;
+    B.mode = 'knocked'; B.modeT = 0.55;
+    if (B.perfect) this.balance = Math.min(100, this.balance + 4);
+    this.cheer = 1; this.shake = B.perfect ? 0.8 : 0.5;
+    addText(this.texts, B.perfect ? 'CRUSH!' : 'POW!', this.bx + 10, this.feetY - 150, '#ffcf4a', B.perfect ? 44 : 38);
+    if (B.hp <= 0) this.botDown();
+  }
+  botDown() {
+    const B = this.b, { W, H } = this.v;
+    B.hp = 0; B.mode = 'down'; B.modeT = 2.4; this.cheer = 1; this.shake = 1;
+    this.balance = Math.min(100, this.balance + BRAWL.KD_HEAL);
+    addText(this.texts, 'KNOCKDOWN!', W / 2, H * 0.32, '#ffcf4a', 44);
+  }
+  knockout() {
+    const { W, H } = this.v;
+    this.state = 'dying'; this.endT = 2.8; this.p.mode = 'down'; this.b.mode = 'celebrate'; this.b.combo = 0;
+    this.ref = { x: -60 }; this.refTarget = Math.max(46, this.px - 205); this.cheer = 1;
+    addText(this.texts, 'DOWN!', W / 2, H * 0.34, '#ffffff', 44);
+  }
+  idleGap() { const d = this.diff; return (1.0 - 0.55 * d) + Math.random() * (0.7 - 0.4 * d); }
+  update(dt) {
+    const { W, H } = this.v, P = this.p, B = this.b;
+    if (this.slow > 0) { this.slow -= dt; dt *= 0.3; }               // slow-mo after a perfect dodge
+    this.t += dt;
+    this.cheer = Math.max(0, this.cheer - dt * 0.7); this.shake = Math.max(0, this.shake - dt * 3);
+    if (this.state === 'countdown') {
+      this.cd -= dt;
+      if (this.cd <= 0) {
+        this.state = 'running'; this.dropGloves(); this.cheer = 1;
+        addText(this.texts, 'FIGHT!', W / 2, H * 0.36, '#ffcf4a', 46);
+        B.mode = 'idle'; B.modeT = 1.2;
+      }
+    } else if (this.state === 'running') {
+      this.time += dt;
+      this.balance = Math.min(100, this.balance + BRAWL.REGEN * dt);
+      // --- bot ---
+      if (B.mode === 'tell') {
+        const a = B.atk; a.el += dt;
+        let e = a.el;                                                  // wind-up time, minus any hitch pause
+        if (a.hitchAt >= 0 && a.el > a.hitchAt) e = a.el < a.hitchAt + a.hitchLen ? a.hitchAt : a.el - a.hitchLen;
+        a.prog = Math.min(1, e / a.dur);
+        if (e >= a.dur) { if (a.type === 'feint') this.feint(); else this.strike(); }
+      } else {
+        B.modeT -= dt;
+        if (B.modeT <= 0) {
+          switch (B.mode) {
+            case 'idle': this.nextAttack(); break;
+            case 'feint': this.startAttack('jab', 0, 0.75); break;     // quick punish after a fake
+            case 'whiff':
+              if (B.combo > 0) { const c = B.combo - 1; this.startAttack(Math.random() < 0.5 ? 'jab' : 'hay', c, 0.8); }
+              else if (P.buffer) { B.mode = 'open'; this.counter(); }
+              else { B.mode = 'open'; B.openMax = B.modeT = B.perfect ? 0.6 : 0.38; }
+              break;
+            case 'strike':
+              if (B.combo > 0) { const c = B.combo - 1; this.startAttack(Math.random() < 0.5 ? 'jab' : 'hay', c, 0.8); }
+              else { B.mode = 'idle'; B.modeT = this.idleGap(); }
+              break;
+            case 'open': case 'knocked': B.mode = 'idle'; B.modeT = this.idleGap(); break;
+            case 'down':
+              this.round++; B.hp = B.maxHp = 100 + 30 * (this.round - 1); B.mode = 'idle'; B.modeT = 0.9; this.cheer = 1;
+              addText(this.texts, `ROUND ${this.round}`, W / 2, H * 0.32, '#ffffff', 40);
+              break;
+          }
+        }
+      }
+      // --- player ---
+      if (this.state === 'running' && P.mode !== 'ready') {
+        P.modeT -= dt;
+        if (P.modeT <= 0) {
+          if (P.mode === 'duck') {                                     // ducked at nothing
+            P.mode = 'wobble'; P.modeT = BRAWL.WOBBLE;
+            addText(this.texts, 'WOBBLE!', this.px - 10, this.feetY - 160, '#7fd3ff', 26);
+            this.hurt(BRAWL.WOBBLE_COST);
+          } else P.mode = 'ready';
+        }
+      }
+    } else if (this.state === 'dying') {
+      this.endT -= dt;
+      if (this.ref) this.ref.x = ease(this.ref.x, this.refTarget, dt, 2.2);
+      if (this.endT <= 0) this.state = 'done';
+    }
+    const pp = P.pose, bp = B.pose;
+    pp.duck = ease(pp.duck, P.mode === 'duck' || P.mode === 'evade' ? 1 : 0, dt, 30);
+    pp.punch = ease(pp.punch, P.mode === 'counter' ? 1 : 0, dt, 28);
+    pp.knock = ease(pp.knock, P.mode === 'hurt' ? 1 : 0, dt, 14);
+    pp.wobble = P.mode === 'wobble';
+    if (this.state === 'dying' || this.state === 'done') pp.fall = Math.min(1, pp.fall + dt * 2.8);
+    if (B.mode === 'tell') bp.wind = BRAWL.ATK[B.atk.type].depth * B.atk.prog;   // arm position tells you exactly when it lands
+    else bp.wind = ease(bp.wind, 0, dt, B.mode === 'feint' ? 22 : 10);
+    bp.punch = ease(bp.punch, (B.mode === 'strike' || B.mode === 'whiff') ? 1 : 0, dt, 30);
+    bp.knock = ease(bp.knock, B.mode === 'knocked' ? 1 : B.mode === 'open' ? 0.45 : 0, dt, 14);
+    bp.wobble = B.mode === 'open';
+    bp.fall = ease(bp.fall, B.mode === 'down' && B.modeT > 0.5 ? 1 : 0, dt, 6);
+    bp.cheer = ease(bp.cheer, B.mode === 'celebrate' ? 1 : 0, dt, 4);
+    const gy = this.feetY + 6;
+    for (const g of this.gloves) {
+      if (g.rest) continue;
+      g.vy += 1100 * dt; g.x += g.vx * dt; g.y += g.vy * dt; g.r += g.vr * dt;
+      if (g.y >= gy) { g.y = gy; if (Math.abs(g.vy) < 120) g.rest = true; g.vy *= -0.3; g.vx *= 0.5; g.vr *= 0.4; }
+    }
+    tickTexts(this.texts, dt);
+  }
+  draw(ctx) {
+    const { W, H } = this.v, P = this.p, B = this.b, fy = this.feetY;
+    ctx.save();
+    if (this.shake > 0) ctx.translate(rand(-1, 1) * this.shake * 6, rand(-1, 1) * this.shake * 4);
+    this.drawArena(ctx);
+    for (const g of this.gloves) {
+      ctx.save(); ctx.translate(g.x, g.y); ctx.rotate(g.r);
+      ctx.fillStyle = g.c; ctx.strokeStyle = OUT; ctx.lineWidth = 2.5; rr(ctx, -12, -8, 24, 16, 6); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(-8, -5, 10, 3);
+      ctx.restore();
+    }
+    const gloved = this.state === 'idle' || this.state === 'countdown';
+    const running = this.state === 'running';
+    if (this.ref) drawSkater(ctx, this.ref.x, fy, 1, REF, Object.assign(newPose(), { wave: true }), false, this.t);
+    // "open" glow behind the bot: tap now to counter
+    if (running && B.mode === 'open') {
+      const k = B.modeT / B.openMax;
+      ctx.save(); ctx.globalAlpha = 0.35 + 0.25 * Math.sin(this.t * 30);
+      ctx.fillStyle = B.perfect ? '#7dffb0' : '#ffd166';
+      ctx.beginPath(); ctx.ellipse(this.bx + 12, fy - 70, 46 + 20 * k, 70 + 20 * k, 0, 0, TAU); ctx.fill();
+      ctx.restore();
+    }
+    drawSkater(ctx, this.bx + B.pose.knock * 26 + B.pose.fall * 30, fy, -1, TEAM_RED, B.pose, gloved, this.t);
+    drawSkater(ctx, this.px - P.pose.knock * 22, fy, 1, TEAM_BLUE, P.pose, gloved, this.t);
+    // the bot's tell: yellow ! for a jab, red ! for a haymaker (or a fake one); pips show follow-up punches
+    if (running && (B.mode === 'tell' || B.mode === 'whiff' || B.mode === 'strike') && B.atk) {
+      const ix = this.bx - 4, iy = fy - 180;
+      if (B.mode === 'tell') {
+        const s = 0.85 + 0.2 * Math.sin(this.t * 20);
+        ctx.save(); ctx.translate(ix, iy); ctx.scale(s, s);
+        ctx.fillStyle = BRAWL.ATK[B.atk.type].color; ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(0, 0, 17, 0, TAU); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = B.atk.type === 'jab' ? '#5a3b00' : '#fff'; ctx.font = `900 24px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('!', 0, 1);
+        ctx.restore();
+      }
+      for (let i = 0; i < B.combo; i++) {
+        ctx.fillStyle = '#ff9de0'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(ix - (B.combo - 1) * 8 + i * 16, iy - 28, 5.5, 0, TAU); ctx.fill(); ctx.stroke();
+      }
+    }
+    // dizzy stars when knocked down
+    if (P.pose.fall > 0.9) {
+      const a = -P.pose.fall * 1.35, hx = 4, hy = -128;
+      const X = this.px + (hx * Math.cos(a) - hy * Math.sin(a)), Y = fy + (hx * Math.sin(a) + hy * Math.cos(a));
+      for (let i = 0; i < 3; i++) { const ang = this.t * 4 + i * 2.09; star(ctx, X + Math.cos(ang) * 26, Y - 16 + Math.sin(ang) * 8, 7, '#ffd166'); }
+    }
+    if (running || this.state === 'dying') {
+      // bot stamina bar + round, streak
+      const bw = 96, bx = this.bx + 12 - bw / 2, by = fy - 222;
+      ctx.fillStyle = 'rgba(14,22,44,.65)'; rr(ctx, bx - 3, by - 3, bw + 6, 14, 6); ctx.fill();
+      ctx.fillStyle = '#e63946'; rr(ctx, bx, by, Math.max(0, bw * B.hp / B.maxHp), 8, 4); ctx.fill();
+      ctx.font = `900 13px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#eaf4ff'; ctx.fillText(`ROUND ${this.round}`, bx + bw / 2, by - 12);
+      if (this.streak >= 2) {
+        ctx.font = `900 ${16 + Math.min(this.streak, 10)}px ${FONT}`; ctx.lineWidth = 4; ctx.strokeStyle = '#13223f';
+        const txt = `STREAK x${this.streak}`;
+        ctx.strokeText(txt, this.px - 4, fy - 214); ctx.fillStyle = '#7dffb0'; ctx.fillText(txt, this.px - 4, fy - 214);
+      }
+    }
+    if (this.state === 'countdown') {
+      const n = Math.max(1, Math.ceil(this.cd)), f = this.cd - Math.floor(this.cd);
+      const sc = 1 + (f > 0.7 ? (f - 0.7) / 0.3 * 0.6 : 0);
+      ctx.save(); ctx.translate(W / 2, H * 0.36); ctx.scale(sc, sc);
+      ctx.font = `900 96px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.lineWidth = 10; ctx.strokeStyle = '#13223f'; ctx.strokeText(String(n), 0, 0);
+      ctx.fillStyle = '#ffcf4a'; ctx.fillText(String(n), 0, 0);
+      ctx.restore();
+    }
+    drawTexts(ctx, this.texts);
+    ctx.restore();
+  }
+}
+
+/* =====================================================================
    GAME LIST — add Game 3 here later by replacing the locked entry
    ===================================================================== */
 const GAMES = [
@@ -772,6 +1035,15 @@ const GAMES = [
     id: 'squirrels', name: 'Slapshot Squirrels', icon: '🐿️', href: 'slapshot-squirrels.html',
     art: 'linear-gradient(180deg,#5fb3ea 0%,#d6efff 62%,#2f7fcf 62%,#16407a 100%)',
     desc: 'Two-player artillery: slap exploding pucks at your rival across the water. Never touch the red button.'
+  },
+  {
+    id: 'brawlpro', name: 'Ice Brawl Pro', icon: '🥊', overTitle: 'Down on the ice!', meterLabel: 'Balance',
+    art: 'linear-gradient(180deg,#2a0f1c 0%,#56202f 50%,#dcefff 50%,#f4faff 100%)',
+    desc: 'The real fight. Time your ducks to the last moment, read fakes, counter and knock the bot down.',
+    howTo: 'Tap to duck right before a punch lands: yellow ! is a fast jab, red ! a haymaker or a fake. Duck at the last moment for a PERFECT. After a dodge, tap again to counter. Knock the bot down to heal.',
+    targetTime: 60,
+    theme: { hudBg: 'rgba(40,12,24,.66)', hudInk: '#ffeef2', panelBg: 'linear-gradient(165deg,#ffffff,#f6dde3)', panelInk: '#2a0f1c', panelEdge: '#ffcf4a', accent: '#c1121f', accentInk: '#ffffff' },
+    create: v => new IceBrawlPro(v)
   }
 ];
 const available = () => GAMES.filter(g => !g.locked && !g.href);   // games that use the shared survival framework
