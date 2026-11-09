@@ -920,7 +920,7 @@ function gl3() {
     el.id = 'stage3d';
     document.body.insertBefore(el, document.body.firstChild);
     const renderer = new T.WebGLRenderer({ canvas: el, antialias: true });
-    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    renderer.setPixelRatio(Math.min(1.5, window.devicePixelRatio || 1));   // sharp enough, and kind to laptop GPUs
     const tri = new T.Shape(); tri.moveTo(-0.5, 0); tri.lineTo(0.5, 0); tri.lineTo(0, 1); tri.closePath();
     const prism = new T.ExtrudeGeometry(tri, { depth: 1, bevelEnabled: false }); prism.translate(0, 0, -0.5); // roof, ridge along Z
     const half = new T.CylinderGeometry(0.5, 0.5, 1, 18, 1, false, 0, Math.PI); half.rotateX(Math.PI / 2); half.rotateZ(Math.PI / 2); // hangar
@@ -1013,17 +1013,77 @@ function shopTex3() {
     x.fillStyle = '#ffe25a'; x.font = `900 84px ${FONT}`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('SHOPPING', 260, 70);
   });
 }
-function grassTex3() {   // field patches, so you can feel the speed without a road
-  return canvasTex3('grass', 256, 256, (x, w, h) => {
-    x.fillStyle = '#6aaa4c'; x.fillRect(0, 0, w, h);
-    const cols = ['#74b054', '#5f9c44', '#80b85a', '#6aa84c', '#93b85c', '#5a9442'];
-    for (let i = 0; i < 16; i++) {
-      x.fillStyle = cols[i % cols.length];
-      x.fillRect(hash(i) * w, hash(i + 40) * h, 30 + hash(i + 80) * 90, 20 + hash(i + 120) * 60);
-    }
-    x.fillStyle = 'rgba(40,80,30,.25)';
-    for (let i = 0; i < 40; i++) x.fillRect(hash(i + 200) * w, hash(i + 300) * h, 3, 3);
-  }, { repeat: true });
+const smooth01 = t => { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); };
+// how much of a city or of Norway is near distance s (smooth, so neighbouring terrain pieces meet without gaps)
+function nearZone3(s, test, before, after) {
+  const zi = Math.floor(s / J3.ZONE);
+  let f = 0;
+  for (let k = zi - 1; k <= zi + 1; k++) {
+    if (k < 0 || !test(ROUTE[routeIdx(k)])) continue;
+    const t = s - k * J3.ZONE;
+    f = Math.max(f, smooth01((t + before) / 60) * smooth01((after - t) / 60));
+  }
+  return f;
+}
+// ground height at x (sideways) and s (distance along the route): flat where you fly, hills further out
+function terrainH3(x, s) {
+  const ax = Math.abs(x), city = nearZone3(s, () => true, 90, J3.CITY + 40), nor = nearZone3(s, c => c.border, 40, J3.ZONE + 40);
+  const valley = 30 + 34 * city;                                     // wider and flatter where a city stands
+  const side = smooth01((ax - valley) / 45) * (1 - smooth01((ax - 240) / 40));
+  const n = 0.5 + 0.24 * Math.sin(x * 0.043 + s * 0.011) + 0.16 * Math.sin(x * 0.017 - s * 0.027 + 1.3) + 0.1 * Math.sin(s * 0.051 + x * 0.09);
+  return side * (16 + 22 * nor) * n;
+}
+const FIELD_COLS = [[112, 160, 78], [98, 148, 68], [126, 168, 86], [200, 184, 84], [150, 128, 92], [134, 162, 84], [106, 154, 74], [118, 150, 80]];
+function terrain3(s0) {               // one zone of ground, low-poly with a colour per triangle
+  const G = G3, T = G.T, W = 560, cols = 56, rows = 52;
+  const geo = new T.PlaneGeometry(W, J3.ZONE, cols, rows).toNonIndexed();
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position, colors = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), z = pos.getZ(i) - (s0 + J3.ZONE / 2);
+    pos.setXYZ(i, x, terrainH3(x, -z), z);
+  }
+  for (let i = 0; i < pos.count; i += 3) {
+    const cx = (pos.getX(i) + pos.getX(i + 1) + pos.getX(i + 2)) / 3, cz = (pos.getZ(i) + pos.getZ(i + 1) + pos.getZ(i + 2)) / 3;
+    const h = (pos.getY(i) + pos.getY(i + 1) + pos.getY(i + 2)) / 3, cs = -cz;
+    let c;
+    if (h < 0.4) c = FIELD_COLS[Math.floor(hash(Math.floor((cx + 2000) / 14) * 31.7 + Math.floor(cs / 18) * 7.3) * FIELD_COLS.length)]; // fields
+    else if (h > 26) c = [240, 243, 248];                                                   // snow
+    else if (h > 15) c = mix([92, 120, 70], [128, 132, 124], smooth01((h - 15) / 6));       // up to bare rock
+    else c = mix([106, 156, 74], [66, 116, 56], smooth01(h / 12));                          // meadows getting darker uphill
+    const v = 0.94 + hash(cx * 0.31 + cs * 0.17) * 0.12;
+    for (let k = 0; k < 3; k++) colors.set([c[0] / 255 * v, c[1] / 255 * v, c[2] / 255 * v], (i + k) * 3);
+  }
+  geo.setAttribute('color', new T.BufferAttribute(colors, 3));
+  geo.computeVertexNormals();
+  if (!G.terrainMat) G.terrainMat = new T.MeshLambertMaterial({ vertexColors: true });
+  return new T.Mesh(geo, G.terrainMat);
+}
+function forest3(g, i, s0) {          // hundreds of pines on the hillsides, as two instanced meshes
+  const G = G3, T = G.T, pts = [];
+  for (let k = 0; k < 520 && pts.length < 300; k++) {
+    const sd = hash(i * 13.1 + k * 0.7) < 0.5 ? -1 : 1, x = sd * (16 + hash(i * 7.7 + k * 1.3) * 220), d = hash(i * 3.3 + k * 2.1) * J3.ZONE;
+    const s = s0 + d, h = terrainH3(x, s), patch = hash(Math.floor((x + 2000) / 40) * 5.1 + Math.floor(s / 50) * 9.7);
+    const city = nearZone3(s, () => true, 90, J3.CITY + 40);
+    if (h > 22) continue;                                              // tree line
+    if (h < 1.5 && (patch > 0.25 || city > 0.2 || Math.abs(x) < 20)) continue;   // the valley stays open, apart from a few groves
+    pts.push([x, h, -s, 0.8 + hash(k + i) * 0.9]);
+  }
+  if (!G.treeMats) G.treeMats = [G.mat(0x24603a), G.mat(0x2c7044)];
+  const tiers = [[0, 3.2, 4.2, 2.6], [1, 2.3, 3.2, 5.0]];              // [material, radius, height, centre height]
+  for (const [mi, r, hh, y] of tiers) {
+    const im = new T.InstancedMesh(G.geo.cone, G.treeMats[mi], pts.length), m = new T.Matrix4();
+    im.frustumCulled = false;   // the instances are spread out; the default culling only looks at one tree at the origin
+    pts.forEach(([x, h, z, sc], k) => { m.makeScale(r * sc, hh * sc, r * sc); m.setPosition(x, h + y * sc, z); im.setMatrixAt(k, m); });
+    g.add(im);
+  }
+}
+function clouds3(g, i, s0) {          // a few low-poly clouds high above
+  if (!G3.cloudMat) G3.cloudMat = new G3.T.MeshLambertMaterial({ color: 0xffffff, emissive: 0x666666 });
+  for (let k = 0; k < 4; k++) {
+    const sd = hash(i * 5.3 + k) < 0.5 ? -1 : 1, x = sd * (30 + hash(i * 2.9 + k * 4.1) * 120), y = 38 + hash(i + k * 3.7) * 16, z = -(s0 + hash(i * 1.7 + k * 9.1) * J3.ZONE);
+    for (let q = 0; q < 5; q++) m3(g, 'sphere', G3.cloudMat, x + (q - 2) * 6 + hash(q + k) * 3, y + hash(q * 3 + k) * 3, z + hash(q * 7 + k) * 6, 14 - Math.abs(q - 2) * 3, 6, 10);
+  }
 }
 function shadowTex3() {
   return canvasTex3('shadow', 128, 128, x => {
@@ -1046,7 +1106,10 @@ function flat3(g, col, x, y, z, w, d) {        // a flat patch lying on the grou
   return m;
 }
 const box3 = (g, col, x, z, w, h, d, y0 = 0) => m3(g, 'box', col, x, y0 + h / 2, z, w, h, d);
-const water3 = (g, x, z, w, d) => flat3(g, 0x3e84c4, x, 0.06, z, w, d);
+const water3 = (g, x, z, w, d) => {
+  if (!G3.waterMat) G3.waterMat = new G3.T.MeshPhongMaterial({ color: 0x3f88c8, shininess: 90, specular: 0x8fb4d8 });
+  return flat3(g, G3.waterMat, x, 0.12, z, w, d);
+};
 function house3(g, x, z, w, h, d, wall, roof, y0 = 0) {
   box3(g, wall, x, z, w, h, d, y0);
   m3(g, 'prism', roof, x, y0 + h, z, w + 0.4, h * 0.6, d + 0.4);
@@ -1093,25 +1156,47 @@ function moose3(g, x, z) {
 }
 
 /* ---------- the jet and the missiles ---------- */
-function jet3() {
+function jet3() {               // a JAS 39 Gripen: canards, cranked delta wing, side intakes, one engine
   const G = G3, T = G.T, g = new T.Group();
-  const add = (geo, col, x, y, z, sx, sy, sz, rx = 0) => {
-    const m = new T.Mesh(geo, typeof col === 'number' ? G.mat(col) : col);
-    m.position.set(x, y, z); m.scale.set(sx, sy, sz); m.rotation.x = rx; g.add(m); return m;
+  if (!G.gm) G.gm = {
+    body: G.mat(0x87919a),
+    wing: new T.MeshLambertMaterial({ color: 0x78838c, side: T.DoubleSide }),
+    dark: G.mat(0x4a5158), radome: G.mat(0x6d767e),
+    glass: new T.MeshPhongMaterial({ color: 0x86c4e0, shininess: 90, specular: 0xffffff }),
+    blue: new T.MeshBasicMaterial({ color: 0x1f5aa8 }), yellow: new T.MeshBasicMaterial({ color: 0xf6c522 }),
+    flame: new T.MeshBasicMaterial({ color: 0xffb347, transparent: true, opacity: 0.9 }),
   };
-  add(G.geo.cyl, 0x8ea5bc, 0, 0, 0, 1.1, 5.4, 1.1, Math.PI / 2);          // fuselage
-  add(G.geo.cone, 0x3d4f63, 0, 0, -3.6, 1.1, 1.8, 1.1, -Math.PI / 2);    // nose
-  add(G.geo.sphere, 0x8ff0ff, 0, 0.55, -1.3, 0.85, 0.7, 2.0);            // canopy
-  const wing = new T.Shape(); wing.moveTo(0, -1); wing.lineTo(3.6, 1.6); wing.lineTo(-3.6, 1.6); wing.closePath();
-  const wg = new T.ExtrudeGeometry(wing, { depth: 0.16, bevelEnabled: false }); wg.rotateX(Math.PI / 2);
-  add(wg, 0x6d849c, 0, 0.05, 0.2, 1, 1, 1);                              // delta wings
-  add(wg, 0x6d849c, 0, 0.1, 2.3, 0.42, 1, 0.42);                         // tailplane
-  const fin = new T.Shape(); fin.moveTo(1.3, 0); fin.lineTo(2.8, 0); fin.lineTo(2.7, 1.8); fin.lineTo(2.1, 1.8); fin.closePath();
-  const fg = new T.ExtrudeGeometry(fin, { depth: 0.14, bevelEnabled: false }); fg.translate(0, 0, -0.07); fg.rotateY(-Math.PI / 2);
-  add(fg, 0x5f7690, 0, 0.4, 0, 1, 1, 1);                                 // tail fin
-  add(G.geo.box, 0xff6b4a, 0, -0.05, 0.9, 1.14, 0.25, 1.8);              // red stripe
-  g.userData.glow = add(G.geo.cone, new T.MeshBasicMaterial({ color: 0xffb347, transparent: true, opacity: 0.9 }), 0, 0, 3.5, 0.8, 1.6, 0.8, Math.PI / 2);
-  g.scale.setScalar(0.62);
+  const M = G.gm;
+  const add = (geo, mat, x, y, z, sx, sy, sz, rx = 0) => {
+    const m = new T.Mesh(geo, mat); m.position.set(x, y, z); m.scale.set(sx, sy, sz); m.rotation.x = rx; g.add(m); return m;
+  };
+  const flatShape = (pts, depth) => {               // a flat panel from (x, z) points, lying in the XZ plane
+    const sh = new T.Shape(); sh.moveTo(pts[0][0], pts[0][1]); for (const q of pts.slice(1)) sh.lineTo(q[0], q[1]); sh.closePath();
+    const geo = new T.ExtrudeGeometry(sh, { depth, bevelEnabled: false }); geo.rotateX(Math.PI / 2); return geo;
+  };
+  add(G.geo.taper, M.body, 0, 0, 0.6, 1.0, 6.0, 0.95, -Math.PI / 2);        // fuselage, slimmer towards the tail
+  add(G.geo.cone, M.radome, 0, 0, -3.65, 1.0, 2.5, 0.95, -Math.PI / 2);    // long pointed nose
+  add(G.geo.cyl, M.dark, 0, 0, -5.15, 0.05, 0.7, 0.05, Math.PI / 2);       // pitot tube
+  add(G.geo.sphere, M.glass, 0, 0.42, -2.05, 0.5, 0.45, 1.6);              // bubble canopy
+  add(G.geo.box, M.body, 0, 0.42, 0.7, 0.36, 0.26, 3.4);                   // dorsal spine
+  for (const sd of [-1, 1]) {
+    add(G.geo.box, M.body, sd * 0.56, -0.14, -0.45, 0.34, 0.52, 2.2);       // air intakes beside the cockpit
+    add(G.geo.box, M.dark, sd * 0.56, -0.14, -1.56, 0.26, 0.4, 0.04);
+  }
+  const canard = flatShape([[0.45, -1.35], [1.75, -0.45], [1.75, -0.2], [0.45, -0.25]], 0.07);
+  add(canard, M.wing, 0, 0.22, 0, 1, 1, 1); add(canard, M.wing, 0, 0.22, 0, -1, 1, 1);     // canards
+  const wing = flatShape([[0, -0.6], [0.5, -0.4], [2.55, 2.65], [2.55, 3.2], [0, 3.2]], 0.12);
+  add(wing, M.wing, 0, -0.08, 0, 1, 1, 1); add(wing, M.wing, 0, -0.08, 0, -1, 1, 1);       // cranked delta wing
+  const fin = new T.Shape(); fin.moveTo(1.4, 0); fin.lineTo(3.55, 0); fin.lineTo(3.45, 1.95); fin.lineTo(2.85, 1.95); fin.closePath();
+  const fg = new T.ExtrudeGeometry(fin, { depth: 0.1, bevelEnabled: false }); fg.translate(0, 0, -0.05); fg.rotateY(-Math.PI / 2);
+  add(fg, M.wing, 0, 0.42, 0, 1, 1, 1);                                     // tall swept fin
+  add(G.geo.cyl, M.dark, 0, 0, 3.75, 0.72, 0.6, 0.72, Math.PI / 2);        // engine nozzle
+  for (const sd of [-1, 1]) {                                               // Swedish roundels on the wings
+    add(G.geo.cyl, M.blue, sd * 1.55, 0.06, 2.3, 0.75, 0.02, 0.75);
+    add(G.geo.cyl, M.yellow, sd * 1.55, 0.075, 2.3, 0.3, 0.02, 0.3);
+  }
+  g.userData.glow = add(G.geo.cone, M.flame, 0, 0, 4.4, 0.6, 1.4, 0.6, Math.PI / 2);   // afterburner
+  g.scale.setScalar(0.66);
   return g;
 }
 function missile3() {
@@ -1119,7 +1204,7 @@ function missile3() {
   if (!G.mm) G.mm = {
     body: G.mat(0xeef1f5), red: G.mat(0xe4473c),
     flame: new T.MeshBasicMaterial({ color: 0xffb347 }),
-    glow: new T.MeshBasicMaterial({ color: 0xff4030, transparent: true, opacity: 0.55, fog: false, depthWrite: false }),
+    flare: new T.MeshBasicMaterial({ color: 0xfff0c0, transparent: true, opacity: 0.95, fog: false, depthWrite: false }),
   };
   const add = (geo, mat, x, y, z, sx, sy, sz, rx = 0) => { const m = new T.Mesh(geo, mat); m.position.set(x, y, z); m.scale.set(sx, sy, sz); m.rotation.x = rx; g.add(m); return m; };
   add(G.geo.cyl, G.mm.body, 0, 0, 0, 0.55, 3.2, 0.55, Math.PI / 2);
@@ -1127,7 +1212,8 @@ function missile3() {
   add(G.geo.box, G.mm.red, 0, 0, -1.3, 1.6, 0.08, 0.6);
   add(G.geo.box, G.mm.red, 0, 0, -1.3, 0.08, 1.6, 0.6);
   add(G.geo.cone, G.mm.flame, 0, 0, -2.2, 0.5, 1.2, 0.5, -Math.PI / 2);
-  add(G.geo.sphere, G.mm.glow, 0, 0, 2.1, 1.7, 1.7, 1.7);                // visible from far away, even through fog
+  add(G.geo.sphere, G.mm.flare, 0, 0, -2.5, 1.3, 1.3, 1.8);              // rocket motor flare, visible from far away
+  g.scale.setScalar(2);
   return g;
 }
 
@@ -1272,7 +1358,7 @@ function s3Norway(g, s0) {
 }
 const SCENES3 = { 'Linköping': s3Linkoping, Arboga: s3Arboga, 'Örebro': s3Orebro, Stockholm: s3Stockholm, Karlstad: s3Karlstad, 'Töcksfors': s3Tocksfors, Norge: s3Norway };
 
-function country3(g, x, z, r, seed, fk) {     // the countryside between cities
+function country3(g, x, z, r, seed, fk, slope) {     // the countryside between cities (slope: on a hillside)
   const ax = Math.abs(x);
   if (r < 0.3) { pine3(g, x, z, 1 + hash(seed) * 0.6); pine3(g, x + 3, z - 2, 0.9 + hash(seed + 1) * 0.5); if (r < 0.15) pine3(g, x - 2.5, z + 3, 1.2); }
   else if (r < 0.42) { birch3(g, x, z, 1); birch3(g, x + 2.5, z + 1.5, 0.8); }
@@ -1282,9 +1368,9 @@ function country3(g, x, z, r, seed, fk) {     // the countryside between cities
     box3(g, 0xf4f2ec, x, z + 5.03, 2.6, 3, 0.08);
   } else if (r < 0.72) {                                                                                     // hay bales
     for (let k = 0; k < 3; k++) { const m = m3(g, 'cyl', 0xf0f0ec, x + k * 2.4, 0.8, z, 1.6, 1.4, 1.6); m.rotation.z = Math.PI / 2; m.updateMatrix(); }
-  } else if (r < 0.82) flat3(g, hash(seed + 5) < 0.5 ? 0xf2d630 : 0x9cc25a, x, 0.05, z, 18, 12);          // rapeseed or crop field
+  } else if (r < 0.82) { birch3(g, x, z, 1.1); pine3(g, x + 3, z + 2, 1); }                                // a few trees
   else if (r < 0.9) { flag3(g, x - 3, z, 7, fk); house3(g, x, z, 5, 3.2, 5, 0xecd282, 0x3c3232); }
-  else if (ax > 22) water3(g, x, z, 22, 16);                                                                 // a small lake
+  else if (!slope) water3(g, x, z, 22, 16);                                                                  // a small lake in the valley
 }
 
 class JetEscape3D extends JetEscape {
@@ -1315,13 +1401,11 @@ class JetEscape3D extends JetEscape {
     s.add(this.stars);
     this.sunM = new T.Mesh(G.geo.sphere, new T.MeshBasicMaterial({ color: 0xffec78, fog: false })); this.sunM.scale.setScalar(70); s.add(this.sunM);
     this.moonM = new T.Mesh(G.geo.sphere, new T.MeshBasicMaterial({ color: 0xf6f2d4, fog: false, transparent: true })); this.moonM.scale.setScalar(44); s.add(this.moonM);
-    this.hemi = new T.HemisphereLight(0xdcefff, 0x4a6a3a, 0.9); s.add(this.hemi);
-    this.dir = new T.DirectionalLight(0xffffff, 0.8); s.add(this.dir); s.add(this.dir.target);
+    this.hemi = new T.HemisphereLight(0xdcefff, 0x56703f, 0.6); s.add(this.hemi);
+    this.dir = new T.DirectionalLight(0xffffff, 0.6); s.add(this.dir); s.add(this.dir.target);
     s.fog = new T.Fog(0xbfe9ff, 90, J3.FAR);
-    const gt = grassTex3();
-    gt.t.repeat.set(40, 40);
-    this.ground = new T.Mesh(new T.PlaneGeometry(1600, 1600), new T.MeshLambertMaterial({ map: gt.t, color: 0xb2c2a6 }));
-    this.ground.rotation.x = -Math.PI / 2; s.add(this.ground);
+    this.ground = new T.Mesh(new T.PlaneGeometry(4000, 4000), G.mat(0x5e9446));   // fills in beyond the terrain pieces
+    this.ground.rotation.x = -Math.PI / 2; this.ground.position.y = -0.5; s.add(this.ground);
     this.shadow = new T.Mesh(G.geo.plane, new T.MeshBasicMaterial({ map: shadowTex3().t, transparent: true, depthWrite: false }));
     this.shadow.rotation.x = -Math.PI / 2; s.add(this.shadow);
     this.jet = jet3(); s.add(this.jet);
@@ -1351,6 +1435,7 @@ class JetEscape3D extends JetEscape {
   }
   buildZone(i) {
     const g = new G3.T.Group(), s0 = i * J3.ZONE, c = ROUTE[routeIdx(i)], fk = i >= 0 && c.border ? 'no' : 'se';
+    g.add(terrain3(s0)); forest3(g, i, s0); clouds3(g, i, s0);
     if (i >= 0) {
       SCENES3[c.name](g, s0);
       sign3(g, dirTex3(c.ahead || c.name, c.road, c.km || 2), 17, -(s0 - 90), 3.6, 5.2, -0.35);
@@ -1358,8 +1443,9 @@ class JetEscape3D extends JetEscape {
     }
     for (let d = i >= 0 ? J3.CITY + 12 : 6; d < J3.ZONE - 6; d += 15) {
       for (const side of [-1, 1]) {
-        const seed = i * 977 + d * 3 + (side > 0 ? 1 : 0);
-        country3(g, side * (9 + hash(seed) * 64), -(s0 + d + hash(seed + 2) * 8), hash(seed + 4), seed, fk);
+        const seed = i * 977 + d * 3 + (side > 0 ? 1 : 0), x = side * (9 + hash(seed) * 64), z = -(s0 + d + hash(seed + 2) * 8);
+        const sub = new G3.T.Group(); sub.position.y = Math.max(0, terrainH3(x, -z) - 0.3); g.add(sub);   // stand on the hillside
+        country3(sub, x, z, hash(seed + 4), seed, fk, sub.position.y > 0.5);
       }
     }
     if (hash(i + 0.5) < 0.8) moose3(g, -15, -(s0 + J3.CITY + 110));
@@ -1377,6 +1463,8 @@ class JetEscape3D extends JetEscape {
     const mk = (x, y) => {
       const g = missile3(), m = { g, x: clamp(x, -J3.CORR, J3.CORR), y: clamp(y, 2.5, J3.CEIL - 1), v: vm, T0, st: 0, passed: false, rel: -dist };
       g.position.set(m.x, m.y, this.pz - dist); this.scene.add(g); this.missiles.push(m);
+      m.sh = new G3.T.Mesh(G3.geo.plane, this.shadow.material);   // its shadow on the ground helps judge where it is
+      m.sh.rotation.x = -Math.PI / 2; m.sh.scale.setScalar(4); m.sh.position.set(m.x, 0.1, g.position.z); this.scene.add(m.sh);
     };
     const r = Math.random(), { px, py } = this;
     if (this.time > 25 && r < 0.25 + 0.2 * d) { mk(px - 3.4, py); mk(px + 3.4, py); }                  // one each side: hold steady
@@ -1431,20 +1519,20 @@ class JetEscape3D extends JetEscape {
     this.trackRoute(-this.pz, running, J3.ZONE, 8, js.x + 60, js.y - 50, dt);
 
     for (const m of this.missiles) {                         // missiles fly straight at you
-      m.g.position.z += m.v * dt;
+      m.g.position.z += m.v * dt; m.sh.position.z = m.g.position.z;
       m.st -= dt;
-      if (m.st <= 0) { m.st = 0.035; this.puff(m.x + rand(-0.2, 0.2), m.y + rand(-0.2, 0.2), m.g.position.z - 2.4, 0.7, 0.9); }
+      if (m.st <= 0) { m.st = 0.03; this.puff(m.x + rand(-0.4, 0.4), m.y + rand(-0.4, 0.4), m.g.position.z - 4.8, 1.3, 1.0); }
       const rel = m.g.position.z - this.pz;
       if (!m.passed && m.rel < 0 && rel >= 0) {              // it just crossed the jet's position
         m.passed = true;
         const miss = Math.hypot(m.x - this.px, m.y - this.py);
         if (this.state === 'running') {
-          if (miss < 1.7) this.crash();
+          if (miss < 2.1) this.crash();
           else if (miss < 3.6 && this.jetScreen) addText(this.texts, 'CLOSE!', this.jetScreen.x + 40, this.jetScreen.y - 46, '#7fd3ff', 24);
         }
       }
       m.rel = rel;
-      if (rel > 30) { this.scene.remove(m.g); m.dead = true; }
+      if (rel > 30) { this.scene.remove(m.g); this.scene.remove(m.sh); m.dead = true; }
     }
     this.missiles = this.missiles.filter(m => !m.dead);
     for (const p of this.puffs) {
@@ -1471,7 +1559,7 @@ class JetEscape3D extends JetEscape {
     const T = G3.T, c = this.cam, k = Math.min(1, dt * 5);
     this.jet.position.set(this.px, this.py, this.pz);
     this.jet.rotation.set(clamp(this.vy / 24, -0.6, 0.6) * 0.5, 0, -this.vx / 15 * 0.7);
-    const gl = this.jet.userData.glow; gl.scale.set(0.8, 1.2 + this.flame * 1.8 + Math.sin(this.t * 40) * 0.2, 0.8);
+    const gl = this.jet.userData.glow; gl.scale.set(0.6, 1.1 + this.flame * 1.8 + Math.sin(this.t * 40) * 0.2, 0.6);
     this.shadow.position.set(this.px, 0.09, this.pz);
     this.shadow.scale.setScalar(4 + this.py * 0.25);
     this.shadow.material.opacity = clamp(1 - this.py / 30, 0.15, 1);
@@ -1496,14 +1584,12 @@ class JetEscape3D extends JetEscape {
     this.sunM.visible = sunP < 1;
     const md = new T.Vector3(-0.5, lerp(-0.1, 0.45, night), -0.85).normalize();
     this.moonM.position.copy(c.position).addScaledVector(md, 800); this.moonM.material.opacity = night; this.moonM.visible = night > 0;
-    this.hemi.intensity = 0.95 - 0.5 * night;
-    this.dir.intensity = (0.85 - 0.6 * night) * (sunP < 1 ? 1 : 0.4);
+    this.hemi.intensity = 0.6 - 0.3 * night;
+    this.dir.intensity = (0.62 - 0.42 * night) * (sunP < 1 ? 1 : 0.4);
     this.dir.color.setRGB(1, lerp(0.98, 0.72, clamp(Tm / 30, 0, 1)), lerp(0.95, 0.6, clamp(Tm / 30, 0, 1)));
     this.dir.position.set(this.px - 40, 80, this.pz + 30); this.dir.target.position.set(this.px, 0, this.pz);
     G3.win.emissiveIntensity = night * 1.1;
-    this.ground.position.set(0, 0, this.pz - 400);
-    const gt = this.ground.material.map;          // keep the field pattern fixed to the world as the ground follows the jet
-    gt.offset.set(0, (((this.pz - 400) / 40) % 1 + 1) % 1);
+    this.ground.position.set(this.px, -0.5, this.pz - 600);
   }
   proj(x, y, z) {
     const v = this._v || (this._v = new G3.T.Vector3());
@@ -1518,32 +1604,9 @@ class JetEscape3D extends JetEscape {
     r.render(this.scene, this.cam);
     this.jetScreen = this.proj(this.px, this.py, this.pz);
     ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height); ctx.restore();
-    this.drawWarnings(ctx);
     drawTexts(ctx, this.texts);
     this.drawHint(ctx);
     this.drawLocation(ctx);
-  }
-  // a red ring where each incoming missile will pass; it tightens as the missile gets close
-  drawWarnings(ctx) {
-    if (this.state !== 'running') return;
-    for (const m of this.missiles) {
-      if (m.passed) continue;
-      const tti = (this.pz - m.g.position.z) / Math.max(1, m.v + this.speed);
-      if (tti < 0 || tti > m.T0 + 0.1) continue;
-      const p = this.proj(m.x, m.y, this.pz - 6);
-      if (!p.ok) continue;
-      const u = clamp(tti / m.T0, 0, 1), rad = 12 + 30 * u;
-      ctx.save();
-      ctx.globalAlpha = 0.95 - 0.5 * u; ctx.strokeStyle = '#ff3b3b'; ctx.lineWidth = 3 + (1 - u) * 2;
-      ctx.beginPath(); ctx.arc(p.x, p.y, rad, 0, TAU); ctx.stroke();
-      for (let q = 0; q < 4; q++) {
-        const a = q * Math.PI / 2 + Math.PI / 4;
-        line(ctx, p.x + Math.cos(a) * (rad - 6), p.y + Math.sin(a) * (rad - 6), p.x + Math.cos(a) * (rad + 6), p.y + Math.sin(a) * (rad + 6));
-      }
-      ctx.fillStyle = '#ff3b3b'; ctx.font = `900 ${Math.round(16 + (1 - u) * 6)}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText('!', p.x, p.y);
-      ctx.restore();
-    }
   }
   drawHint(ctx) {                              // the controls, for the first seconds of a run
     if (this.state !== 'running' || this.time > 6) return;
@@ -2119,7 +2182,7 @@ const GAMES = [
     id: 'jet', name: 'Jet Escape', icon: '✈️', overTitle: 'Shot down!',
     art: 'linear-gradient(180deg,#5ec4ff 0%,#bfe9ff 55%,#ffd08a 100%)',
     desc: 'Fly your fighter jet in 3D across Sweden, from Linköping to the Norwegian border, and dodge the incoming missiles.',
-    howTo: 'Fly with W A S D or the arrow keys: W climbs, S dives, A and D steer. Space or a tap also boosts you up. A red ring shows where a missile will fly past, so get out of the way, and don\'t touch the ground. The road signs tell you which city you are flying over.',
+    howTo: 'Fly with W A S D or the arrow keys: W climbs, S dives, A and D steer. Space or a tap also boosts you up. Dodge the missiles coming at you (their shadows on the ground help) and don\'t touch the ground. The road signs tell you which city you are flying over.',
     targetTime: 60,
     theme: { hudBg: 'rgba(8,37,77,.5)', hudInk: '#ffffff', panelBg: 'linear-gradient(165deg,#f2faff,#c6e6ff)', panelInk: '#0b2a4a', panelEdge: '#ffffff', accent: '#ff7a45', accentInk: '#ffffff' },
     create: v => (gl3() ? new JetEscape3D(v) : new JetEscape(v))   // 3D when WebGL works, else the 2D version
