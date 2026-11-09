@@ -380,6 +380,7 @@ const MENU = [
   { label: 'vs Computer: Easy',   ai: true, difficulty: 'easy' },
   { label: 'vs Computer: Normal', ai: true, difficulty: 'normal' },
   { label: 'vs Computer: Hard',   ai: true, difficulty: 'hard' },
+  { label: '← Back to main menu', href: 'index.html' },   // returns to the game package's hub
 ];
 let menuIndex = 0;
 let gameMode = MENU[0];
@@ -470,6 +471,10 @@ function bossCountdownText() {
 /** Title-screen menu choice: start a game in that mode. */
 function startMode(index) {
   menuIndex = index;
+  if (MENU[index].href) {             // "Back to main menu": leave the game
+    window.location.href = MENU[index].href;
+    return;
+  }
   gameMode = MENU[index];
   newGame(true);
 }
@@ -1985,7 +1990,7 @@ function drawTitle() {
     const r = menuRect(i);
     const selected = i === menuIndex;
     roundRectPath(ctx, r.x, r.y, r.w, r.h, 10);
-    ctx.fillStyle = selected ? '#ffd23b' : 'rgba(255,255,255,0.12)';
+    ctx.fillStyle = selected ? '#ffd23b' : (item.href ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.12)');
     ctx.fill();
     ctx.font = 'bold 20px system-ui, sans-serif';
     ctx.fillStyle = selected ? '#2a2000' : '#fff';
@@ -1994,12 +1999,12 @@ function drawTitle() {
 
   ctx.font = '16px system-ui, sans-serif';
   ctx.fillStyle = `rgba(255,255,255,${0.6 + 0.4 * Math.sin(time * 4)})`;
-  ctx.fillText('↑ / ↓ choose a mode, ENTER or click to start   ·   vs Computer: you play Red', W / 2, 640);
+  ctx.fillText('↑ / ↓ choose a mode, ENTER or click to start   ·   vs Computer: you play Red', W / 2, 668);
 }
 
 /** Rectangle of the i-th game mode button on the title screen. */
 function menuRect(i) {
-  return { x: W / 2 - 180, y: 380 + i * 54, w: 360, h: 44 };
+  return { x: W / 2 - 180, y: 372 + i * 50 + (MENU[i].href ? 12 : 0), w: 360, h: 42 };
 }
 
 /** Buttons on the game-over screen. */
