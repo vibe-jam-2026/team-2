@@ -16,7 +16,8 @@
   FINAL BOSS: from round 8 the Seagull Striker (a seagull built like a
   jet fighter) flies over at the start of every round and drops one blob of
   explosive poop on each island. A puck that hits a poop sets off a giant
-  explosion. A player whose own island is wiped out loses.
+  explosion with a big knockback. A squirrel knocked into a poop sets it off
+  too. A player whose own island is wiped out loses.
 
   FINAL FINAL BOSS: beat the computer and the Seagull Striker drops a giant
   Mega Squirrel onto its island (or onto a raft if the island is gone).
@@ -114,6 +115,8 @@ const CONFIG = {
   KNOCKBACK_MIN: 1,         // squirrels pushed at the edge of the blast
   KNOCKBACK_MAX: 3,         // squirrels pushed by a direct hit
   KNOCKBACK_SPEED: 240,     // px/s while being pushed
+  POOP_KNOCKBACK_MIN: 2,    // poop explosions push much harder:
+  POOP_KNOCKBACK_MAX: 6,    //   2 squirrels at the edge, 6 right next to it
   HEAL_FOR_MEGA: true,      // the human gets full health back when the Mega Squirrel arrives
 };
 
@@ -443,6 +446,7 @@ function createPlayer(index, x) {
     hurtT: 0,
     knock: 0,               // knockback distance still to travel (px)
     knockDir: 0,            // -1 = left, 1 = right
+    knocked: false,         // true until a knocked-back squirrel has come to rest (it can set off poop)
   };
   p.y = surfaceY(p.x);
   return p;
@@ -635,6 +639,8 @@ function stepPlayer(p, dir) {
 function updatePlayerPhysics(p, dt) {
   if (p.carried) return;                         // hanging under the jet
   if (p.knock > 0 && !p.inWater) updateKnockback(p, dt);
+  checkKnockbackPoop(p);
+  if (p.knocked && p.knock === 0 && p.grounded) p.knocked = false;   // came to rest
   if (p.grounded && !isSolid(p.x, p.y + 1)) {
     p.grounded = false;
     p.vy = 0;
@@ -675,13 +681,26 @@ function updatePlayerPhysics(p, dt) {
  * edge of the blast up to KNOCKBACK_MAX for a direct hit (the Mega Squirrel, being
  * bigger, moves half as far). It hops a little and can be knocked off a ledge.
  */
-function applyKnockback(p, blastX, closeness) {
-  const squirrels = lerp(CONFIG.KNOCKBACK_MIN, CONFIG.KNOCKBACK_MAX, clamp(closeness, 0, 1));
+function applyKnockback(p, blastX, closeness, big = false) {
+  const min = big ? CONFIG.POOP_KNOCKBACK_MIN : CONFIG.KNOCKBACK_MIN;
+  const max = big ? CONFIG.POOP_KNOCKBACK_MAX : CONFIG.KNOCKBACK_MAX;
+  const squirrels = lerp(min, max, clamp(closeness, 0, 1));
   p.knock = Math.round(squirrels * CONFIG.SQUIRREL_LENGTH / p.scale);
   const dx = p.x - blastX;
   p.knockDir = Math.abs(dx) >= 1 ? Math.sign(dx) : -p.facing;   // dead-centre hit: pushed backwards
   p.grounded = false;
-  p.vy = -(120 + 120 * closeness) / Math.sqrt(p.scale);       // small hop
+  p.knocked = true;
+  const hop = big ? 260 + 200 * closeness : 120 + 120 * closeness;
+  p.vy = -hop / Math.sqrt(p.scale);                            // hop (a big one for poop blasts)
+}
+
+/** A knocked-back squirrel that bumps into explosive poop sets it off. */
+function checkKnockbackPoop(p) {
+  if (!p.knocked || p.inWater) return;
+  const pp = poops.find(o => o.grounded && distanceToBody(p, o.x, o.y - 6) < CONFIG.POOP_RADIUS);
+  if (!pp) return;
+  floatTexts.push({ x: pp.x, y: pp.y - 40, text: 'BUMP!', color: '#ffffff', life: 1.0 });
+  poopExplosion(pp);
 }
 
 /** Moves a knocked-back squirrel sideways, climbing small bumps and stopping at walls. */
@@ -1169,7 +1188,7 @@ function poopExplosion(pp) {
     if (dmg <= 0) continue;
     p.health = Math.max(0, p.health - dmg);
     p.hurtT = 0.9;
-    applyKnockback(p, x, 1 - d / CONFIG.POOP_DAMAGE_RADIUS);
+    applyKnockback(p, x, 1 - d / CONFIG.POOP_DAMAGE_RADIUS, true);
     floatTexts.push({ x: p.x, y: p.y - 55, text: `-${dmg}`, color: p.color, life: 1.6 });
   }
 
@@ -1561,7 +1580,7 @@ function update(dt) {
     case 'flight': updatePuck(dt); break;
     case 'settle': {
       settleTimer += dt;
-      const calm = players.every(p => (p.grounded && p.knock === 0) || p.inWater) && poops.every(pp => pp.grounded);
+      const calm = players.every(p => (p.grounded && !p.knocked) || p.inWater) && poops.every(pp => pp.grounded);
       if ((settleTimer > 1.0 && calm && particles.length < 10) || settleTimer > 4) {
         if (players.some(p => p.defeat || p.health <= 0)) showGameOver();
         else nextTurn();
