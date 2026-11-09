@@ -964,8 +964,11 @@ function safeToStep(p, dir) {
   return probe.y < CONFIG.WATER_Y - 20;
 }
 
+/** The AI level a computer player uses. The Mega Squirrel always plays on Hard. */
+const aiLevelFor = p => (p.mega ? AI_LEVELS.hard : AI_LEVELS[gameMode.difficulty]);
+
 function aiBeginTurn(p) {
-  const level = AI_LEVELS[gameMode.difficulty];
+  const level = aiLevelFor(p);
   ai.wait = 0.7;
   ai.dir = Math.random() < 0.5 ? -1 : 1;
   if (!safeToStep(p, ai.dir)) ai.dir = -ai.dir;
@@ -993,7 +996,7 @@ function simulateShot(p, aim, power, windAccel) {
 
 /** Chooses the AI's target angle and power for this turn. */
 function aiPlanShot(p) {
-  const level = AI_LEVELS[gameMode.difficulty];
+  const level = aiLevelFor(p);
   const opp = players[1 - p.index];
   const believedWind = wind * level.windAwareness;
   const candidates = [];             // every useful shot, scored (lower = better)
@@ -1363,7 +1366,7 @@ function drawBossStatus(cx, cy) {
  *    flies in carrying a giant squirrel and drops it onto the AI's island,
  *    or onto a raft if the island is (nearly) gone. From then on the jet
  *    drops no more poop. The Mega Squirrel has more health, hits harder and
- *    is too big to walk. It aims like the AI at the chosen difficulty.
+ *    is too big to walk. It always aims like the Hard AI, whatever difficulty was chosen.
  * ====================================================================== */
 
 /** A spot on the AI's island with room for the Mega Squirrel, or null if there is none. */
