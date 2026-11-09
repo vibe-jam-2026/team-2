@@ -212,7 +212,7 @@ const mix = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b
 const rgb = c => `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`;
 
 function rr(ctx, x, y, w, h, r) {
-  r = Math.min(r, w / 2, h / 2);
+  r = Math.max(0, Math.min(r, w / 2, h / 2));   // never negative: canvas throws on a negative radius
   ctx.beginPath();
   ctx.moveTo(x + r, y);
   ctx.arcTo(x + w, y, x + w, y + h, r);
@@ -1490,7 +1490,7 @@ class IceBrawlFP extends IceBrawl {
     const E = this.e, L = this.layout(), k = L.k, c = E.col, { H } = this.v;
     ctx.save();
     if (E.drop > 0.01) { ctx.translate(L.cx, H); ctx.rotate(E.drop * 0.45 * E.flinchDir); ctx.translate(-L.cx, -H); }
-    const tw = 210 * k, top = L.sh - 24 * k, th = H - top + 60 * k;
+    const tw = 210 * k, top = L.sh - 24 * k, th = Math.max(120 * k, H - top + 60 * k);   // stays valid while a knocked-out rival drops off screen
     if (E.kind === 'skater') {
       ctx.fillStyle = c.jersey; rr(ctx, L.cx - tw / 2, top, tw, th, 52 * k); ctx.fill();
       ctx.save(); rr(ctx, L.cx - tw / 2, top, tw, th, 52 * k); ctx.clip();
