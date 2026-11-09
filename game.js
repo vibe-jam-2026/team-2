@@ -44,7 +44,13 @@
     usmash: { dmg: 12, base: 6,   growth: 0.17, angle: 88,  start: 10, active: 5, end: 18, box: { x: 0,  y: -98, w: 66, h: 44 }, airBoost: -14 },
     dsmash: { dmg: 11, base: 5,   growth: 0.13, angle: 25,  start: 12, active: 4, end: 20, box: { x: 0,  y: -14, w: 132, h: 22 }, both: true },
   };
-  for (const k in MOVES) MOVES[k].name = k;
+  // Launch directions as fixed numbers (cos/sin of `angle`). Math.sin/cos may differ slightly between
+  // browsers, and online play needs both computers to simulate bit-for-bit the same thing.
+  const LAUNCH = {
+    jab: [0.8660, 0.5000], utilt: [0.0872, 0.9962], dtilt: [0.9397, 0.3420], dair: [0.2588, -0.9659],
+    fsmash: [0.7880, 0.6157], usmash: [0.0349, 0.9994], dsmash: [0.9063, 0.4226],
+  };
+  for (const k in MOVES) { MOVES[k].name = k; [MOVES[k].lx, MOVES[k].ly] = LAUNCH[k]; }
 
   // ---------------------------------------------------------------- audio
   let actx = null;
@@ -101,12 +107,13 @@
   }
   const padPressed = (n) => [...padNow].some((k) => k.endsWith(':' + n) && !padPrev.has(k));
 
+  // Reads one or more keyboard layouts plus one gamepad. A key tapped between two frames still counts.
   class HumanCtrl {
-    constructor(i) { this.i = i; }
+    constructor(maps, pad) { this.maps = maps.map((i) => KEYMAPS[i]); this.pad = pad; }
     held() {
-      const m = KEYMAPS[this.i], s = {};
-      for (const k in m) s[k] = m[k].some((c) => keys.has(c));
-      const gp = pads()[this.i];
+      const s = {};
+      for (const k in KEYMAPS[0]) s[k] = this.maps.some((m) => m[k].some((c) => keys.has(c) || pressedKeys.has(c)));
+      const gp = pads()[this.pad];
       if (gp) {
         const ax = gp.axes[0] || 0, ay = gp.axes[1] || 0;
         const b = (n) => !!(gp.buttons[n] && gp.buttons[n].pressed);
@@ -391,9 +398,8 @@
 
     d.dmg += m.dmg;
     const kb = m.base + d.dmg * m.growth;
-    const ang = m.angle * Math.PI / 180;
-    d.vx = Math.cos(ang) * kb * dirX;
-    d.vy = -Math.sin(ang) * kb;
+    d.vx = m.lx * kb * dirX;
+    d.vy = -m.ly * kb;
     if (d.ground && d.vy > 0) d.vy = -d.vy * 0.7; // spikes on grounded targets pop them up
     d.hitstun = Math.floor(kb * 2.4) + 6;
     d.ground = false; d.move = null; d.jsq = 0; d.fastfall = false; d.broken = 0;
@@ -407,49 +413,30 @@
   }
 
   // ---------------------------------------------------------------- flow
+  // mode: 0 = CPU vs CPU, 1 = vs CPU, 2 = local 2 players, 'online'
   function startMatch(mode) {
     game.mode = mode;
     const red = '#ff5a5f', blue = '#3fa7ff';
-    game.fighters = mode === 0
-      ? [new Fighter(0, 'CPU 1', red, new CpuCtrl()), new Fighter(1, 'CPU 2', blue, new CpuCtrl())]
-      : [new Fighter(0, 'P1', red, new HumanCtrl(0)),
-         new Fighter(1, mode === 1 ? 'CPU' : 'P2', blue, mode === 1 ? new CpuCtrl() : new HumanCtrl(1))];
+    if (mode === 'online') {
+      const me = game.net.me;
+      game.fighters = [0, 1].map((i) => new Fighter(i, i === me ? 'YOU' : 'RIVAL', i ? blue : red, new NetCtrl()));
+    } else if (mode === 0) {
+      game.fighters = [new Fighter(0, 'CPU 1', red, new CpuCtrl()), new Fighter(1, 'CPU 2', blue, new CpuCtrl())];
+    } else if (mode === 1) {
+      game.fighters = [new Fighter(0, 'P1', red, new HumanCtrl([0, 1], 0)), new Fighter(1, 'CPU', blue, new CpuCtrl())];
+    } else {
+      game.fighters = [new Fighter(0, 'P1', red, new HumanCtrl([0], 0)), new Fighter(1, 'P2', blue, new HumanCtrl([1], 1))];
+    }
     game.parts = []; game.hitstop = 0; game.shake = 0;
     game.countdown = 180; game.goT = 0; game.winner = null; game.paused = false; game.state = 'playing';
   }
 
   const pressed = (...codes) => codes.some((c) => pressedKeys.has(c));
 
-  function update() {
-    game.frame++;
-    pollPads();
-    if (pressed('Backquote')) game.debug = !game.debug;
-
-    if (game.state === 'menu') {
-      if (pressed('Digit1', 'Numpad1')) startMatch(1);
-      else if (pressed('Digit2', 'Numpad2')) startMatch(2);
-      else if (pressed('Digit0', 'Numpad0')) startMatch(0);
-      else if (padPressed(9) || padPressed(0)) startMatch(pads().length >= 2 ? 2 : 1);
-      return;
-    }
-
-    if (game.state === 'over') {
-      game.overT++;
-      stepParticles();
-      if (game.overT > 45) {
-        if (pressed('Enter', 'Space') || padPressed(9) || padPressed(0)) startMatch(game.mode);
-        else if (pressed('Escape') || padPressed(8)) game.state = 'menu';
-      }
-      return;
-    }
-
-    // playing
-    if (pressed('KeyP', 'Escape') || padPressed(9)) {
-      if (game.paused && pressed('Escape')) { game.state = 'menu'; return; }
-      game.paused = !game.paused;
-    }
-    if (game.paused) return;
-
+  // One step of the game simulation. Everything that affects gameplay happens here and depends only on
+  // the current state plus each fighter's controller, so two computers fed the same inputs stay in sync.
+  // (Particles, screen shake and sound may use randomness: they never feed back into gameplay.)
+  function simTick() {
     if (game.countdown > 0) {
       if (game.countdown % 60 === 0) sfx.beep(false);
       game.countdown--;
@@ -467,6 +454,329 @@
 
     const alive = game.fighters.filter((f) => f.stocks > 0);
     if (alive.length <= 1) { game.state = 'over'; game.winner = alive[0] || null; game.overT = 0; }
+  }
+
+  function update() {
+    game.frame++;
+    pollPads();
+    if (pressed('Backquote')) game.debug = !game.debug;
+    netUpdate();
+
+    if (game.state === 'menu') {
+      if (pressed('Digit1', 'Numpad1')) startMatch(1);
+      else if (pressed('Digit2', 'Numpad2')) startMatch(2);
+      else if (pressed('Digit3', 'Numpad3')) openLobby('choose');
+      else if (pressed('Digit0', 'Numpad0')) startMatch(0);
+      else if (padPressed(9) || padPressed(0)) startMatch(pads().length >= 2 ? 2 : 1);
+      return;
+    }
+
+    if (game.state === 'lobby') { lobbyInput(); return; }
+
+    if (game.state === 'over') {
+      game.overT++;
+      stepParticles();
+      const n = game.net;
+      if (n) {
+        sendInputs(n); // the opponent may still need our last inputs to finish the match
+        if (pressed('Escape')) leaveOnline();
+        else if (game.overT > 45 && !n.want && (pressed('Enter', 'Space') || padPressed(9) || padPressed(0))) { n.want = true; n.resendT = 0; }
+        return;
+      }
+      if (game.overT > 45) {
+        if (pressed('Enter', 'Space') || padPressed(9) || padPressed(0)) startMatch(game.mode);
+        else if (pressed('Escape') || padPressed(8)) game.state = 'menu';
+      }
+      return;
+    }
+
+    // playing
+    if (game.net) {
+      if (pressed('Escape')) leaveOnline();
+      else netStep();
+      return;
+    }
+    if (pressed('KeyP', 'Escape') || padPressed(9)) {
+      if (game.paused && pressed('Escape')) { game.state = 'menu'; return; }
+      game.paused = !game.paused;
+    }
+    if (game.paused) return;
+    simTick();
+  }
+
+  // ---------------------------------------------------------------- online
+  // Delay-based lockstep over a WebRTC data channel (PeerJS). Only inputs are sent: your input for
+  // simulation tick T is sampled D ticks early and sent to the other player, and a tick is simulated
+  // once both players' inputs for it are known. Both sides then compute exactly the same game.
+  const PARAMS = new URLSearchParams(location.search);
+  // Testing aids: ?net=local connects two tabs of the same browser without a server;
+  // ?lag=<round-trip ms>&loss=<0..1> simulate a bad connection.
+  const NET_LOCAL = PARAMS.get('net') === 'local';
+  const NET_LAG = +PARAMS.get('lag') || 0, NET_LOSS = +PARAMS.get('loss') || 0;
+  const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O or 1/I
+  const ID_PREFIX = 'team2brawl-';
+  const BTN = ['left', 'right', 'up', 'down', 'light', 'heavy', 'shield'];
+  const encode = (s) => BTN.reduce((n, k, i) => n | (s[k] ? 1 << i : 0), 0);
+  const decode = (n) => { const s = {}; BTN.forEach((k, i) => { s[k] = !!(n & (1 << i)); }); return s; };
+  const makeCode = () => Array.from({ length: 4 }, () => CODE_CHARS[(Math.random() * CODE_CHARS.length) | 0]).join('');
+  const shareLink = (code) => location.origin + location.pathname + location.search + '#' + code;
+
+  class NetCtrl { held(f) { return decode(game.net.inputs[f.idx][game.net.tick] || 0); } }
+  const localCtrl = new HumanCtrl([0, 1], 0); // online you can use either keyboard layout
+
+  function peerTransport() {
+    const t = { on: {} };
+    let peer = null, conn = null;
+    const wire = (c) => {
+      conn = c;
+      c.on('open', () => t.on.open());
+      c.on('data', (d) => t.on.data(d));
+      c.on('close', () => t.on.close());
+      c.on('error', (e) => t.on.error('Connection error (' + ((e && e.type) || e) + ').'));
+    };
+    const friendly = (e) => ({
+      'unavailable-id': 'taken',
+      'peer-unavailable': 'No game found with that code.',
+      'browser-incompatible': "This browser doesn't support online play (WebRTC).",
+      network: "Couldn't reach the matchmaking server.",
+      'server-error': "Couldn't reach the matchmaking server.",
+      'socket-error': "Couldn't reach the matchmaking server.",
+    }[e.type] || 'Connection error (' + e.type + ').');
+    t.host = (code) => {
+      peer = new window.Peer(ID_PREFIX + code, { debug: 0 });
+      peer.on('open', () => t.on.ready());
+      peer.on('connection', (c) => { if (conn) c.close(); else wire(c); });
+      peer.on('error', (e) => t.on.error(friendly(e)));
+    };
+    t.join = (code) => {
+      peer = new window.Peer({ debug: 0 });
+      peer.on('open', () => wire(peer.connect(ID_PREFIX + code, { reliable: false, serialization: 'json' })));
+      peer.on('error', (e) => t.on.error(friendly(e)));
+    };
+    t.send = (m) => { if (conn && conn.open) conn.send(m); };
+    t.close = () => { try { if (conn) conn.close(); if (peer) peer.destroy(); } catch (e) { /* already gone */ } };
+    return t;
+  }
+
+  // Two tabs of the same browser, no server: for testing the netcode (open with ?net=local).
+  function localTransport() {
+    const t = { on: {} }, me = Math.random().toString(36).slice(2);
+    let ch = null, open = false;
+    const post = (m) => { if (ch) ch.postMessage({ from: me, m }); };
+    const start = (code, isHost) => {
+      ch = new BroadcastChannel(ID_PREFIX + code);
+      ch.onmessage = (e) => {
+        const { from, m } = e.data;
+        if (from === me) return;
+        if (m.hello) { if (isHost && !open) { open = true; post({ welcome: 1 }); t.on.open(); } return; }
+        if (m.welcome) { if (!isHost && !open) { open = true; t.on.open(); } return; }
+        if (open) t.on.data(m);
+      };
+      if (isHost) setTimeout(() => t.on.ready(), 0);
+      else { const hi = () => { if (ch && !open) { post({ hello: 1 }); setTimeout(hi, 300); } }; hi(); }
+    };
+    t.host = (code) => start(code, true);
+    t.join = (code) => start(code, false);
+    t.send = (m) => { if (open) post(m); };
+    t.close = () => { if (ch) ch.close(); ch = null; };
+    return t;
+  }
+
+  function withBadNetwork(t) {
+    if (!NET_LAG && !NET_LOSS) return t;
+    const send = t.send;
+    t.send = (m) => {
+      if (Math.random() < NET_LOSS) return;
+      setTimeout(() => send(m), (NET_LAG / 2) * (0.8 + Math.random() * 0.4));
+    };
+    return t;
+  }
+
+  function openLobby(screen, extra) {
+    game.state = 'lobby';
+    game.lobby = Object.assign({ screen, code: '', typed: '', status: '', error: '', copied: false }, extra);
+  }
+
+  function leaveOnline(err) {
+    const n = game.net;
+    game.net = null;
+    if (n) { n.transport.send({ t: 'bye' }); n.transport.close(); }
+    if (err) openLobby('error', { error: err });
+    else game.state = 'menu';
+  }
+
+  function netConnect(isHost, code) {
+    if (!NET_LOCAL && !window.Peer) { openLobby('error', { error: "The networking library didn't load (is the network blocked?)." }); return; }
+    const n = game.net = {
+      isHost, me: isHost ? 0 : 1, them: isHost ? 1 : 0, connected: false, startedAt: game.frame, connectedAt: 0,
+      match: 0, D: 3, tick: 0, localNext: 0, inputs: [[], []], remoteAck: -1, peerAck: -1,
+      lastRecv: 0, rtt: 0, rttN: 0, pingT: 0, resendT: 0, want: false, peerWants: false,
+      sums: [{}, {}], desync: false, stall: 0,
+    };
+    const t = n.transport = withBadNetwork(NET_LOCAL ? localTransport() : peerTransport());
+    const live = () => game.net === n;
+    t.on.ready = () => { if (live() && !n.connected) game.lobby.status = 'Waiting for your opponent to join…'; };
+    t.on.open = () => {
+      if (!live()) return;
+      n.connected = true; n.connectedAt = game.frame; n.lastRecv = performance.now();
+      game.lobby.status = 'Connected! Starting…';
+    };
+    t.on.data = (m) => { if (live()) onNetMessage(n, m); };
+    t.on.close = () => { if (live()) leaveOnline('Your opponent left the game.'); };
+    t.on.error = (e) => {
+      if (!live() || n.connected) return;
+      if (e === 'taken') { t.close(); netConnect(true, makeCode()); return; } // code already in use: pick another
+      leaveOnline(e);
+    };
+    game.lobby.code = code;
+    if (isHost) { game.lobby.status = 'Contacting the matchmaking server…'; t.host(code); }
+    else { game.lobby.screen = 'connecting'; game.lobby.status = 'Joining…'; t.join(code); }
+  }
+
+  function onNetMessage(n, m) {
+    n.lastRecv = performance.now();
+    switch (m.t) {
+      case 'ping': n.transport.send({ t: 'pong', ts: m.ts }); break;
+      case 'pong': {
+        const r = performance.now() - m.ts;
+        n.rtt = n.rttN ? n.rtt * 0.8 + r * 0.2 : r; n.rttN++;
+        break;
+      }
+      case 'in': { // the opponent's inputs, starting at tick m.s; may overlap what we already have
+        if (m.m !== n.match) break;
+        const buf = n.inputs[n.them];
+        m.d.forEach((v, i) => { if (buf[m.s + i] === undefined) buf[m.s + i] = v; });
+        while (buf[n.remoteAck + 1] !== undefined) n.remoteAck++;
+        if (m.a > n.peerAck) n.peerAck = m.a;
+        break;
+      }
+      case 'cs': if (m.m === n.match) { n.sums[1][m.k] = m.h; checkSum(n, m.k); } break;
+      case 'rematch': // guest -> host: "I'm ready for match m+1"
+        if (!n.isHost) break;
+        if (m.m === n.match) n.peerWants = true;
+        else if (m.m < n.match) n.transport.send({ t: 'start', m: n.match, D: n.D }); // our start got lost
+        break;
+      case 'start': if (!n.isHost && m.m > n.match) beginOnlineMatch(n, m.m, m.D); break;
+      case 'bye': leaveOnline('Your opponent left the game.'); break;
+    }
+  }
+
+  function beginOnlineMatch(n, match, D) {
+    Object.assign(n, {
+      match, D, tick: 0, localNext: D, inputs: [[], []], remoteAck: D - 1, peerAck: D - 1,
+      want: false, peerWants: false, sums: [{}, {}], desync: false, stall: 0,
+    });
+    for (let t = 0; t < D; t++) { n.inputs[0][t] = 0; n.inputs[1][t] = 0; } // the first D ticks have no input
+    startMatch('online');
+  }
+
+  // Runs every frame while online: keep-alive pings, timeouts and the start/rematch handshake.
+  // Every message here is safe to repeat or lose; whatever matters is re-sent until it lands.
+  function netUpdate() {
+    const n = game.net;
+    if (!n) return;
+    const now = performance.now();
+    if (!n.connected) {
+      if (!n.isHost && game.frame - n.startedAt > 900) leaveOnline("Couldn't connect. Check the code and try again.");
+      return;
+    }
+    if (--n.pingT <= 0) { n.pingT = 30; n.transport.send({ t: 'ping', ts: now }); }
+    if (now - n.lastRecv > 5000) { leaveOnline('Connection lost.'); return; }
+
+    const inLobby = game.state === 'lobby';
+    if (!inLobby && !(game.state === 'over' && n.want)) return;
+    if (n.isHost) {
+      const ready = inLobby ? n.rttN >= 3 || game.frame - n.connectedAt > 90 : true; // measure ping first
+      if (n.peerWants && ready) {
+        const D = Math.max(2, Math.min(10, Math.ceil(n.rtt / 2 / STEP) + 2));
+        n.transport.send({ t: 'start', m: n.match + 1, D });
+        beginOnlineMatch(n, n.match + 1, D);
+      }
+    } else if (--n.resendT <= 0) {
+      n.resendT = 20;
+      n.transport.send({ t: 'rematch', m: n.match });
+    }
+  }
+
+  function netStep() {
+    const n = game.net;
+    const enc = encode(localCtrl.held());
+    const fill = () => { while (n.localNext <= n.tick + n.D) n.inputs[n.me][n.localNext++] = enc; };
+    fill();
+    // If the opponent is ahead of us, simulate two ticks this frame to catch up.
+    const maxSteps = n.remoteAck - n.tick > n.D ? 2 : 1;
+    let steps = 0;
+    while (steps < maxSteps && game.state === 'playing' && n.inputs[n.them][n.tick] !== undefined) {
+      simTick();
+      n.tick++; steps++;
+      if (n.tick % 60 === 0) {
+        const h = stateHash();
+        n.sums[0][n.tick] = h;
+        n.transport.send({ t: 'cs', m: n.match, k: n.tick, h });
+        checkSum(n, n.tick);
+      }
+      fill();
+    }
+    n.stall = steps ? 0 : n.stall + 1;
+    sendInputs(n);
+  }
+
+  // Send every input the opponent hasn't confirmed yet. Repeating them in each packet means a lost
+  // packet costs nothing: the next one carries the same inputs.
+  function sendInputs(n) {
+    const from = n.peerAck + 1, to = Math.min(n.localNext, from + 64);
+    n.transport.send({ t: 'in', m: n.match, s: from, d: n.inputs[n.me].slice(from, Math.max(from, to)), a: n.remoteAck });
+  }
+
+  // Both sides hash the game state every second; different hashes mean the games have drifted apart.
+  function stateHash() {
+    let s = game.hitstop + '|' + game.countdown;
+    for (const f of game.fighters) {
+      s += '|' + [f.x, f.y, f.vx, f.vy, f.dmg, f.stocks, f.hitstun, f.shieldHP, f.facing,
+        f.move ? f.move.name : '-', f.mt, f.dead, f.invuln, f.jumps].join(',');
+    }
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return h >>> 0;
+  }
+  function checkSum(n, k) {
+    const a = n.sums[0][k], b = n.sums[1][k];
+    if (a !== undefined && b !== undefined && a !== b && !n.desync) {
+      n.desync = true;
+      console.warn('Desync detected at tick', k);
+    }
+  }
+
+  function lobbyInput() {
+    const L = game.lobby;
+    if (pressed('Escape')) { if (game.net) leaveOnline(); else game.state = 'menu'; return; }
+    if (L.screen === 'choose') {
+      if (pressed('KeyH')) { openLobby('host'); netConnect(true, makeCode()); }
+      else if (pressed('KeyJ')) openLobby('join');
+    } else if (L.screen === 'join') {
+      for (const c of pressedKeys) {
+        const ch = c.startsWith('Key') ? c.slice(3) : c.startsWith('Digit') ? c.slice(5) : '';
+        if (ch && CODE_CHARS.includes(ch) && L.typed.length < 4) L.typed += ch;
+      }
+      if (pressed('Backspace')) L.typed = L.typed.slice(0, -1);
+      if (pressed('Enter') && L.typed.length === 4) netConnect(false, L.typed);
+    } else if (L.screen === 'host') {
+      if (pressed('KeyC') && L.code && navigator.clipboard) {
+        navigator.clipboard.writeText(shareLink(L.code)).then(() => { L.copied = true; }, () => {});
+      }
+    } else if (L.screen === 'error') {
+      if (pressed('Enter')) openLobby('choose');
+    }
+  }
+
+  addEventListener('pagehide', () => { if (game.net) game.net.transport.send({ t: 'bye' }); });
+
+  // Opening an invite link (…/team-2/#K7QX) joins that game directly.
+  const hashCode = location.hash.slice(1).toUpperCase();
+  if (/^[A-Z0-9]{4}$/.test(hashCode)) {
+    history.replaceState(null, '', location.pathname + location.search);
+    openLobby('join', { typed: hashCode });
+    netConnect(false, hashCode);
   }
 
   function stepParticles() {
@@ -638,7 +948,7 @@
     ctx.fillStyle = 'rgba(8,6,20,0.82)'; ctx.fillRect(0, 0, W, H);
     centerText('TEAM 2 BRAWL', 170, 84, '#ffd25a', '900');
     centerText('Knock your opponent off the stage. Higher damage % = they fly further.', 220, 20, '#e8e0ff', '500');
-    centerText('Press 1 — vs CPU     ·     Press 2 — 2 players', 300, 30);
+    centerText('1 — vs CPU     ·     2 — 2 players     ·     3 — online', 300, 30);
     centerText('(gamepads work too: press Start · 0 = watch CPU vs CPU)', 336, 16, '#b9addb', '500');
 
     const rows = [
@@ -663,12 +973,45 @@
     centerText('P: pause · Esc: menu · `: show hitboxes', 668, 14, '#8f84b3', '500');
   }
 
+  function drawLobby() {
+    const L = game.lobby, n = game.net;
+    ctx.fillStyle = 'rgba(8,6,20,0.82)'; ctx.fillRect(0, 0, W, H);
+    centerText('ONLINE', 150, 64, '#ffd25a', '900');
+    const sub = (t, y, size = 18) => centerText(t, y, size, '#b9addb', '500');
+    if (L.screen === 'choose') {
+      centerText('H — host a game', 280, 34);
+      centerText('J — join a game', 340, 34);
+      sub('The host gets a 4-letter code (or invite link) to send to the other player.', 420);
+      sub('Each player uses their own computer, with either keyboard layout or a gamepad.', 450);
+    } else if (L.screen === 'host') {
+      sub('Your game code', 245, 22);
+      centerText(L.code.split('').join(' '), 345, 100, '#fff', '900');
+      sub(shareLink(L.code), 400);
+      sub(L.copied ? 'Invite link copied!' : 'C: copy invite link', 430, 16);
+      centerText(L.status, 510, 24);
+    } else if (L.screen === 'join') {
+      sub("Type the host's code, then press Enter", 245, 22);
+      centerText((L.typed + '____').slice(0, 4).split('').join(' '), 345, 100, '#fff', '900');
+      sub('Backspace: delete', 400, 16);
+    } else if (L.screen === 'connecting') {
+      centerText(L.code.split('').join(' '), 345, 100, '#fff', '900');
+      centerText(L.status, 430, 24);
+    } else if (L.screen === 'error') {
+      centerText(L.error, 330, 26, '#ff8a8a');
+      sub('Enter: try again', 390);
+    }
+    if (n && n.connected && n.rttN) sub(`Ping ${Math.round(n.rtt)} ms`, 560, 16);
+    if (NET_LOCAL) sub('Local test mode (?net=local): connects tabs in this browser only', 600, 14);
+    centerText('Esc: back to menu', 660, 16, '#8f84b3', '500');
+  }
+
   function draw() {
     ctx.save();
     if (game.shake > 0.5) ctx.translate((Math.random() - 0.5) * game.shake, (Math.random() - 0.5) * game.shake);
     drawBackground();
     drawStage();
-    if (game.state !== 'menu') {
+    const inGame = game.state === 'playing' || game.state === 'over';
+    if (inGame) {
       for (const f of game.fighters) drawFighter(f);
       for (const p of game.parts) {
         ctx.globalAlpha = Math.max(0, p.life / p.max);
@@ -679,8 +1022,16 @@
     ctx.restore();
 
     if (game.state === 'menu') { drawMenu(); return; }
+    if (game.state === 'lobby') { drawLobby(); return; }
     for (const f of game.fighters) drawOffscreen(f);
     drawHUD();
+    const n = game.net;
+    if (n) {
+      ctx.font = '500 14px system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(255,255,255,0.6)';
+      ctx.fillText(`Online · ping ${Math.round(n.rtt)} ms · input delay ${n.D} frames · Esc: leave`, 14, 24);
+      if (n.desync) centerText('Out of sync — the two games no longer match', 60, 20, '#ff7a7a');
+      if (n.stall > 20 && game.state === 'playing') centerText('Waiting for opponent…', 110, 28, '#ffd25a');
+    }
 
     if (game.countdown > 0) centerText(String(Math.ceil(game.countdown / 60)), H / 2 - 40, 120, '#ffd25a', '900');
     else if (game.goT > 0) centerText('GO!', H / 2 - 40, 120, '#9be37a', '900');
@@ -692,8 +1043,16 @@
     if (game.state === 'over') {
       ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(0, 0, W, H);
       const wn = game.winner;
-      centerText(wn ? `${wn.name} WINS!` : 'DRAW!', H / 2 - 40, 96, wn ? wn.color : '#fff', '900');
-      if (game.overT > 45) centerText('Enter / Start: rematch · Esc: menu', H / 2 + 20, 22, '#eee', '500');
+      if (n) {
+        const won = wn && wn.idx === n.me;
+        centerText(!wn ? 'DRAW!' : won ? 'YOU WIN!' : 'YOU LOSE', H / 2 - 40, 96, wn ? wn.color : '#fff', '900');
+        if (game.overT > 45) {
+          centerText(n.want ? 'Waiting for your opponent to accept the rematch…' : 'Enter: rematch · Esc: leave', H / 2 + 20, 22, '#eee', '500');
+        }
+      } else {
+        centerText(wn ? `${wn.name} WINS!` : 'DRAW!', H / 2 - 40, 96, wn ? wn.color : '#fff', '900');
+        if (game.overT > 45) centerText('Enter / Start: rematch · Esc: menu', H / 2 + 20, 22, '#eee', '500');
+      }
     }
   }
 
