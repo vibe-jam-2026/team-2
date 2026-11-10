@@ -10,6 +10,8 @@
   Two hockey-helmeted squirrels on two islands slap exploding pucks at
   each other. Whatever you do: DO NOT touch the red button.
 
+  Sound effects are synthesized in the browser (Web Audio API); M mutes.
+
   Modes: 2 players on one keyboard (hot-seat), or play Red against a
   computer-controlled Blue on Easy, Normal or Hard (see AI_LEVELS).
 
@@ -117,6 +119,9 @@ const CONFIG = {
   KNOCKBACK_SPEED: 240,     // px/s while being pushed
   POOP_KNOCKBACK_MIN: 2,    // poop explosions push much harder:
   POOP_KNOCKBACK_MAX: 6,    //   2 squirrels at the edge, 6 right next to it
+
+  // Sound (all effects are synthesized with the Web Audio API; press M to mute)
+  SOUND_VOLUME: 0.5,        // master volume, 0..1
   HEAL_FOR_MEGA: true,      // the human gets full health back when the Mega Squirrel arrives
 };
 
@@ -815,6 +820,8 @@ function launchPuck(p) {
     trail: [],
   };
   state = 'flight';
+  Sound.slapshot(p.power);
+  Sound.startFlight();
   // A few sparks off the stick
   for (let i = 0; i < 8; i++) {
     particles.push({ x: puck.x, y: puck.y, vx: rand(-80, 80) + d.x * 60, vy: rand(-80, 40), g: 200,
@@ -833,6 +840,7 @@ function updatePuck(dt) {
     if (hit) { resolvePuckHit(hit); return; }
   }
   puck.rot += puck.spin * dt;
+  Sound.updateFlight(Math.hypot(puck.vx, puck.vy), puck.spin);
   puck.trail.push({ x: puck.x, y: puck.y });
   if (puck.trail.length > 14) puck.trail.shift();
 }
@@ -933,6 +941,7 @@ function explode(x, y, shooter = null) {
   }
 
   spawnExplosion(x, y);
+  Sound.poff(false);
   shake = 10;
   enterSettle();
 }
@@ -1196,6 +1205,7 @@ function poopExplosion(pp) {
   }
 
   for (let i = 0; i < 3; i++) spawnExplosion(x + rand(-35, 35), y + rand(-30, 20));
+  Sound.poff(true);
   flashes.push({ x, y, t: 0, scale: 2.6 });
   floatTexts.push({ x, y: y - 70, text: 'KA-BOOM!', color: '#ffd23b', life: 1.6 });
   shake = 24;
@@ -1497,6 +1507,218 @@ function drawMegaDelivery() {
 }
 
 /* ======================================================================
+ * 8e. SOUND EFFECTS
+ *    Everything is synthesized with the Web Audio API (no audio files):
+ *      slapshot: noise "crack" + falling-pitch wooden "thwack"
+ *      flight:   looping noise through a band-pass filter, pulsed at the
+ *                puck's tumble rate -> "whup-whup-whup" while it flops along
+ *      poff:     cartoon explosion, a falling "poff" plus a soft noise puff
+ *                (a much bigger, deeper one for exploding bird poop)
+ *      splash:   short sweep of filtered noise
+ *    Browsers only allow audio after the player has pressed a key or clicked,
+ *    so the audio context is created on the first input. M toggles mute.
+ *    Each sound takes (ctx, destination, startTime) so it can also be
+ *    rendered offline for testing.
+ * ====================================================================== */
+const SFX = {
+  noiseBuffers: new WeakMap(),
+
+  /** One second of white noise for this audio context (made once). */
+  noise(ac) {
+    if (!this.noiseBuffers.has(ac)) {
+      const buf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      this.noiseBuffers.set(ac, buf);
+    }
+    const src = ac.createBufferSource();
+    src.buffer = this.noiseBuffers.get(ac);
+    return src;
+  },
+
+  /** Gain node with an instant attack and an exponential fade-out. */
+  envelope(ac, t, peak, duration) {
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(peak, t + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + duration);
+    return g;
+  },
+
+  /** Stick hits puck: crack + thwack, louder with more power (0..100). */
+  slapshot(ac, out, t, power) {
+    const vol = 0.55 + 0.45 * power / 100;
+    // Crack: bright noise burst
+    const n = this.noise(ac);
+    const hp = ac.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 1800;
+    const ng = this.envelope(ac, t, 0.9 * vol, 0.09);
+    n.connect(hp).connect(ng).connect(out);
+    n.start(t);
+    n.stop(t + 0.12);
+    // Thwack: wooden body with a fast pitch drop
+    const o = ac.createOscillator();
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(260, t);
+    o.frequency.exponentialRampToValueAtTime(70, t + 0.13);
+    const og = this.envelope(ac, t, 0.8 * vol, 0.16);
+    o.connect(og).connect(out);
+    o.start(t);
+    o.stop(t + 0.2);
+    // Clack of the blade
+    const c = ac.createOscillator();
+    c.type = 'square';
+    c.frequency.value = 1100;
+    const cg = this.envelope(ac, t, 0.18 * vol, 0.025);
+    c.connect(cg).connect(out);
+    c.start(t);
+    c.stop(t + 0.04);
+  },
+
+  /** Starts the "flopping through the air" loop. Returns handles for update/stop. */
+  startFlight(ac, out, t) {
+    const src = this.noise(ac);
+    src.loop = true;
+    const bp = ac.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 700;
+    bp.Q.value = 1.4;
+    const level = ac.createGain();          // overall loudness (follows speed)
+    level.gain.setValueAtTime(0.0001, t);
+    level.gain.exponentialRampToValueAtTime(1.0, t + 0.06);
+    const flutter = ac.createGain();        // pulsed by the LFO: the "whup-whup"
+    flutter.gain.value = 0.5;
+    const lfo = ac.createOscillator();
+    lfo.type = 'sine';
+    lfo.frequency.value = 5;
+    const depth = ac.createGain();
+    depth.gain.value = 0.5;
+    lfo.connect(depth).connect(flutter.gain);
+    src.connect(bp).connect(flutter).connect(level).connect(out);
+    src.start(t);
+    lfo.start(t);
+    return { src, lfo, bp, level };
+  },
+
+  /** Follows the puck: faster = higher and louder, spin rate = flutter rate. */
+  updateFlight(ac, f, speed, spin) {
+    const t = ac.currentTime;
+    f.bp.frequency.setTargetAtTime(350 + speed * 0.9, t, 0.05);
+    f.level.gain.setTargetAtTime(0.4 + Math.min(0.9, speed / 1000), t, 0.05);
+    f.lfo.frequency.setTargetAtTime(Math.abs(spin) / Math.PI, t, 0.05);   // a flat puck "whups" twice per turn
+  },
+
+  stopFlight(ac, f) {
+    const t = ac.currentTime;
+    f.level.gain.cancelScheduledValues(t);
+    f.level.gain.setTargetAtTime(0.0001, t, 0.02);
+    f.src.stop(t + 0.12);
+    f.lfo.stop(t + 0.12);
+  },
+
+  /** Silly cartoon explosion: "poff" (big = exploding bird poop). */
+  poff(ac, out, t, big) {
+    const len = big ? 0.55 : 0.22;
+    // The "poff": a round tone falling fast in pitch
+    const o = ac.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(big ? 300 : 520, t);
+    o.frequency.exponentialRampToValueAtTime(big ? 40 : 85, t + len);
+    const og = this.envelope(ac, t, big ? 1.0 : 0.8, len + 0.05);
+    o.connect(og).connect(out);
+    o.start(t);
+    o.stop(t + len + 0.1);
+    // Soft puff of air
+    const n = this.noise(ac);
+    const lp = ac.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(big ? 1400 : 2200, t);
+    lp.frequency.exponentialRampToValueAtTime(big ? 120 : 300, t + len * 1.6);
+    const ng = this.envelope(ac, t, big ? 0.9 : 0.5, len * 1.8);
+    n.connect(lp).connect(ng).connect(out);
+    n.start(t);
+    n.stop(t + len * 2);
+    if (big) {
+      // Deep rumble and a second "poff" for the giant blast
+      const r = ac.createOscillator();
+      r.type = 'sine';
+      r.frequency.setValueAtTime(70, t);
+      r.frequency.exponentialRampToValueAtTime(30, t + 0.9);
+      const rg = this.envelope(ac, t, 0.7, 0.9);
+      r.connect(rg).connect(out);
+      r.start(t);
+      r.stop(t + 1);
+      this.poff(ac, out, t + 0.12, false);
+    }
+  },
+
+  /** Short watery splash. */
+  splash(ac, out, t, size) {
+    const n = this.noise(ac);
+    const bp = ac.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.Q.value = 0.8;
+    bp.frequency.setValueAtTime(1800, t);
+    bp.frequency.exponentialRampToValueAtTime(500, t + 0.35);
+    const g = this.envelope(ac, t, 0.6 + 0.8 * size, 0.45);
+    n.connect(bp).connect(g).connect(out);
+    n.start(t);
+    n.stop(t + 0.45);
+  },
+};
+
+/** Live audio for the game: creates the context on first input and handles mute. */
+const Sound = {
+  ac: null,
+  master: null,
+  muted: false,
+  flight: null,
+
+  /** Called on every key press / click: browsers only start audio after user input. */
+  unlock() {
+    if (!this.ac) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      this.ac = new AC();
+      this.master = this.ac.createGain();
+      this.master.gain.value = CONFIG.SOUND_VOLUME;
+      this.master.connect(this.ac.destination);
+    }
+    if (this.ac.state === 'suspended') this.ac.resume();
+  },
+  ready() { return this.ac && !this.muted; },
+
+  toggleMute() {
+    this.muted = !this.muted;
+    if (this.muted) this.stopFlight();
+    if (this.master) this.master.gain.value = this.muted ? 0 : CONFIG.SOUND_VOLUME;
+  },
+
+  slapshot(power) { if (this.ready()) SFX.slapshot(this.ac, this.master, this.ac.currentTime, power); },
+  poff(big) { if (this.ready()) SFX.poff(this.ac, this.master, this.ac.currentTime, big); },
+  splash(size) { if (this.ready()) SFX.splash(this.ac, this.master, this.ac.currentTime, size); },
+  startFlight() {
+    this.stopFlight();
+    if (this.ready()) this.flight = SFX.startFlight(this.ac, this.master, this.ac.currentTime);
+  },
+  updateFlight(speed, spin) { if (this.flight) SFX.updateFlight(this.ac, this.flight, speed, spin); },
+  stopFlight() {
+    if (this.flight) SFX.stopFlight(this.ac, this.flight);
+    this.flight = null;
+  },
+};
+
+/** Small "Sound on/off (M)" note in the bottom-right corner. */
+function drawSoundIndicator() {
+  ctx.font = '13px system-ui, sans-serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.fillText(Sound.muted ? 'Sound off · M' : 'Sound on · M', W - 14, H - 14);
+}
+
+/* ======================================================================
  * 9. PARTICLES AND EFFECTS
  * ====================================================================== */
 function spawnExplosion(x, y) {
@@ -1519,6 +1741,7 @@ function spawnExplosion(x, y) {
 }
 
 function spawnSplash(x, y, count) {
+  Sound.splash(Math.min(1, count / 30));
   for (let i = 0; i < count; i++) {
     particles.push({ x: x + rand(-8, 8), y, vx: rand(-130, 130), vy: rand(-460, -180), g: 900,
       life: rand(0.6, 1.0), max: 1.0, size: rand(2, 4), color: Math.random() < 0.5 ? '#d8f1ff' : '#5fb0f0', water: true });
@@ -1564,6 +1787,7 @@ function showBanner(text, color, sub = null) {
  * ====================================================================== */
 function update(dt) {
   time += dt;
+  if (!puck && Sound.flight) Sound.stopFlight();     // the puck's flight ended (hit, splash, reset...)
   updateEffects(dt);
 
   if (state !== 'title') {
@@ -2370,11 +2594,13 @@ function render() {
 
   if (state === 'title') {
     drawTitle();
+    drawSoundIndicator();
     return;
   }
   drawHUD();
   if (state === 'button') drawButtonAlarm();
   if (state === 'gameover') drawGameOver();
+  drawSoundIndicator();
 }
 
 /* ======================================================================
@@ -2385,6 +2611,8 @@ const GAME_KEYS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', '
 window.addEventListener('keydown', e => {
   if (GAME_KEYS.includes(e.code)) e.preventDefault();
   keys[e.code] = true;
+  Sound.unlock();
+  if (e.code === 'KeyM' && !e.repeat) Sound.toggleMute();
 
   // Title screen: choose a game mode
   if (state === 'title') {
@@ -2411,6 +2639,7 @@ window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; }
 const TURN_STATES = ['move', 'aim', 'swing', 'flight', 'settle'];
 
 canvas.addEventListener('mousedown', e => {
+  Sound.unlock();
   const pt = toGameCoords(e);
   if (state === 'title') {
     MENU.forEach((_, i) => { if (inRect(pt, menuRect(i))) startMode(i); });
