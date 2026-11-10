@@ -1995,6 +1995,20 @@ class JetEscape3D extends JetEscape {
 /* =====================================================================
    GAME 2 — ICE BRAWL  (1v1 hockey fight, survive the bot's punches)
    ===================================================================== */
+/* Punch sounds for both brawl games, made with the hub's SND synth: a heavy thump for a hit, a sharp thwack for a block */
+let brawlSfxUntil = -1e9;                // until when a punch sound is playing (Face-Off ignores the mic meanwhile so it doesn't hear it as a scream)
+const sfxBrawl = {
+  hit(power = 1) {
+    const v = clamp(power, 0.5, 1.6); brawlSfxUntil = Math.max(brawlSfxUntil, performance.now() + 220);
+    SND.tone(rand(130, 165), 0.17, { vol: 0.5 * v, to: 42, attack: 0.002 });
+    SND.noise(0.1, { vol: 0.42 * v, f: 1400, to: 260, type: 'lowpass', q: 0.8, attack: 0.002 });
+  },
+  block(power = 1) {
+    const v = clamp(power, 0.5, 1.4); brawlSfxUntil = Math.max(brawlSfxUntil, performance.now() + 130);
+    SND.tone(rand(230, 270), 0.08, { type: 'triangle', vol: 0.28 * v, to: 120, attack: 0.002 });
+    SND.noise(0.06, { vol: 0.34 * v, f: 2300, q: 1.4, attack: 0.002 });
+  }
+};
 const TEAM_BLUE = { jersey: '#2f6fe0', stripe: '#ffffff', pants: '#1b2a55', helmet: '#2f6fe0', glove: '#1d3f99', skin: '#f3c9a0' };
 const TEAM_RED  = { jersey: '#e63946', stripe: '#ffd166', pants: '#3b1420', helmet: '#e63946', glove: '#9e1f2b', skin: '#e2ad86' };
 const REF       = { jersey: '#ffffff', stripe: '#16161c', pants: '#16161c', helmet: '#16161c', glove: '#16161c', skin: '#efc39b', ref: true };
@@ -2085,7 +2099,7 @@ class IceBrawl {
     }
     this.scratches = []; for (let i = 0; i < 16; i++) this.scratches.push({ x: Math.random(), y: Math.random(), w: rand(30, 90), a: rand(-0.2, 0.2) });
   }
-  start() { this.state = 'countdown'; this.cd = 3; }
+  start() { this.state = 'countdown'; this.cd = 3; SND.unlock(); }   // started by a tap/key, so sound may begin
   action() {
     if (this.state !== 'running') return;
     const P = this.p;
@@ -2102,7 +2116,7 @@ class IceBrawl {
   strike() {
     const B = this.b, P = this.p;
     if (P.mode === 'duck') { B.mode = 'whiff'; B.modeT = 0.16; addText(this.texts, 'WHIFF!', this.px - 10, this.feetY - 175, '#9fe0ff', 30); return; }
-    this.balance -= 25; P.mode = 'hurt'; P.modeT = 0.4; this.shake = 1; B.mode = 'strike'; B.modeT = 0.3; B.combo = 0;
+    this.balance -= 25; P.mode = 'hurt'; P.modeT = 0.4; this.shake = 1; B.mode = 'strike'; B.modeT = 0.3; B.combo = 0; sfxBrawl.hit(1.3);
     addText(this.texts, 'BONK!', this.px - 6, this.feetY - 160, '#ff6b6b', 36);
     if (this.balance <= 0.5) { this.balance = 0; this.knockout(); }
   }
@@ -2148,7 +2162,7 @@ class IceBrawl {
             else {
               P.mode = 'counter'; P.modeT = 0.4; B.mode = 'knocked'; B.modeT = 0.6;
               this.balance = Math.min(100, this.balance + 6); this.cheer = 1; this.shake = 0.5;
-              addText(this.texts, 'POW!', this.bx + 10, this.feetY - 150, '#ffcf4a', 40);
+              addText(this.texts, 'POW!', this.bx + 10, this.feetY - 150, '#ffcf4a', 40); sfxBrawl.hit(1);
             }
             break;
           case 'strike': case 'knocked':
@@ -2460,7 +2474,7 @@ class IceBrawlFP extends IceBrawl {
   }
   hitRival(dmg, s, txt, col) {
     const E = this.e, L = this.layout();
-    E.hp -= dmg; E.flinch = 1; E.flinchDir = sgn(s); E.lastHit = s;
+    E.hp -= dmg; E.flinch = 1; E.flinchDir = sgn(s); E.lastHit = s; sfxBrawl.hit(dmg / 9);
     if (E.kind === 'trump' && Math.random() < 0.15 && E.hp > 0) addText(this.texts, 'FAKE NEWS!', L.cx - sgn(s) * 90 * L.k, L.head - 90 * L.k, '#ffffff', 24);
     if (E.mode === 'guard') { E.mode = 'flinch'; E.modeT = 0.22; }
     addText(this.texts, txt, L.cx + sgn(s) * 70 * L.k, L.head - 40 * L.k, col, txt === 'POW!' ? 32 : 36);
@@ -2475,6 +2489,7 @@ class IceBrawlFP extends IceBrawl {
   blocked(s, parry) {
     const h = this.hands[s], E = this.e, L = this.layout();
     if (E.btn === s && this.t - E.guardSince > 0.15) return this.nuke();   // you punched the hand holding the NUKE button
+    sfxBrawl.block(parry ? 1.3 : 1);
     E.blockT = FP.BLOCK_WINDOW; E.blockAt = this.t;     // it is blocking: a scream now stuns it
     if (parry) {
       h.st = 'stun'; h.t = 0; h.stunT = 0.8; this.lastPunches = [];
@@ -2496,8 +2511,9 @@ class IceBrawlFP extends IceBrawl {
 
   /* ---------- screaming ---------- */
   listen(dt) {
-    const lvl = fpMicLevel();
+    let lvl = fpMicLevel();
     this.mic = Math.max(lvl, this.mic - dt * 0.8);   // for the meter
+    if (performance.now() < brawlSfxUntil) lvl = 0;      // a punch sound is playing: the mic may be hearing the speakers
     if (lvl > FP.SCREAM) { if (this.loudT === 0) this.loudAt = this.t; this.loudT += dt; } else this.loudT = 0;
     this.screamCD -= dt;
     const E = this.e;
@@ -2551,15 +2567,15 @@ class IceBrawlFP extends IceBrawl {
       if (bt <= FP.PERFECT) {
         E.mode = 'open'; E.modeT = 0.85; E.combo = 0; this.slow = 0.2; this.combo = Math.min(this.combo + 1, 5);
         this.stamina = Math.min(100, this.stamina + 15); this.cheer = Math.max(this.cheer, 0.7);
-        addText(this.texts, 'PERFECT!', tx, ty, '#7dffb0', 34); return;
+        addText(this.texts, 'PERFECT!', tx, ty, '#7dffb0', 34); sfxBrawl.block(1.3); return;
       }
       this.combo = 0;
-      if (bt <= FP.GOOD) { addText(this.texts, 'BLOCK', tx, ty, '#c9d3de', 24); this.shake = 0.2; this.hurt(dmg * 0.35); return; }
-      if (bt <= FP.WEAK) { addText(this.texts, 'WEAK BLOCK', tx, ty, '#ffb347', 24); this.shake = 0.4; this.hurt(dmg * lerp(0.4, 0.8, (bt - FP.GOOD) / (FP.WEAK - FP.GOOD))); return; }
+      if (bt <= FP.GOOD) { sfxBrawl.block(1); addText(this.texts, 'BLOCK', tx, ty, '#c9d3de', 24); this.shake = 0.2; this.hurt(dmg * 0.35); return; }
+      if (bt <= FP.WEAK) { sfxBrawl.block(0.9); sfxBrawl.hit(0.5); addText(this.texts, 'WEAK BLOCK', tx, ty, '#ffb347', 24); this.shake = 0.4; this.hurt(dmg * lerp(0.4, 0.8, (bt - FP.GOOD) / (FP.WEAK - FP.GOOD))); return; }
       h.st = 'stun'; h.t = 0; h.stunT = 0.7;
       addText(this.texts, 'GUARD BREAK!', tx, ty - 40 * k, '#ff6b6b', 28);
     }
-    this.combo = 0; this.flash = 1; this.shake = A.dmg > 15 ? 1 : 0.6;
+    this.combo = 0; this.flash = 1; this.shake = A.dmg > 15 ? 1 : 0.6; sfxBrawl.hit(dmg / 9 + 0.3);
     addText(this.texts, A.name, tx, ty, '#ff6b6b', A.dmg > 15 ? 38 : 30);
     if (E.kind === 'trump' && Math.random() < 0.6) { const L = this.layout(); addText(this.texts, TRUMP_LINES[(Math.random() * TRUMP_LINES.length) | 0], L.cx, L.head - 95 * L.k, '#ffffff', 26); }
     this.hurt(dmg);
