@@ -13,6 +13,7 @@
   Sound effects are synthesized in the browser (Web Audio API); M mutes.
   Microphone extras: T = trash talk (speech bubbles; the AI talks back),
   B = record your own battlecry that plays when you shoot.
+  Voice shooting: while aiming, say "shoot" (or "skjut") instead of pressing Space; V turns it off.
 
   Modes: 2 players on one keyboard (hot-seat), or play Red against a
   computer-controlled Blue on Easy, Normal or Hard (see AI_LEVELS).
@@ -1756,14 +1757,15 @@ const Sound = {
 };
 
 /** Small "Sound on/off (M)" note in the bottom-right corner. */
-function drawSoundIndicator() {
+function drawSoundIndicator(onTitle = false) {
   ctx.font = '13px system-ui, sans-serif';
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = 'rgba(255,255,255,0.75)';
   ctx.fillText(Sound.muted ? 'Sound off · M' : 'Sound on · M', W - 14, H - 14);
+  if (onTitle) return;                       // the title screen explains these itself
   const talkKeys = gameMode.ai ? 'T: trash talk' : 'T / Y: trash talk (Red / Blue)';
-  ctx.fillText(`${talkKeys} · B: record battlecry`, W - 14, H - 32);
+  ctx.fillText(`${talkKeys} · B: record battlecry · V: voice shooting ${VoiceShoot.enabled ? 'on' : 'off'}`, W - 14, H - 32);
 }
 
 /* ======================================================================
@@ -1909,6 +1911,7 @@ const TrashTalk = {
   /** T / Y pressed: start talking, or stop listening if already listening. */
   toggle(p) {
     if (this.rec) { this.rec.stop(); return; }
+    VoiceShoot.stop();                     // the microphone is needed for talking now
     if (this.isTyping() || Battlecry.recording) return;
     this.speaker = p;
     if (this.SR && !this.useTyping) this.listen(p);
@@ -2069,6 +2072,77 @@ const Battlecry = {
 
 /** Who presses B records for: the human against the computer, otherwise the player whose turn it is. */
 const battlecryOwner = () => (gameMode.ai ? players[0] : active());
+
+/* ---------- Voice shooting: say "shoot" to fire ---------- */
+const SHOOT_WORDS = /\b(shoot|shoots|shot|fire|skjut|skjuter|skjut nu)\b/i;
+
+const VoiceShoot = {
+  enabled: true,
+  blocked: false,     // the microphone or speech service can't be used
+  rec: null,
+  lastStart: -99,
+
+  /** Listen only while a human is aiming and the mic isn't busy with something else. */
+  wanted() {
+    return this.enabled && !this.blocked && !!TrashTalk.SR && state === 'aim' && !isAI(active())
+      && !TrashTalk.rec && !TrashTalk.isTyping() && !Battlecry.recording && !Battlecry.starting;
+  },
+
+  /** Called every frame: starts or stops listening as needed. */
+  update() {
+    const want = this.wanted();
+    if (want && !this.rec && time - this.lastStart > 1) this.start();
+    else if (!want && this.rec) this.stop();
+  },
+
+  start() {
+    const rec = new TrashTalk.SR();
+    rec.lang = navigator.language || 'en-US';
+    rec.continuous = true;
+    rec.interimResults = true;        // react as soon as the word is heard
+    rec.onresult = e => {
+      for (let i = e.resultIndex; i < e.results.length; i++) this.heard(e.results[i][0].transcript);
+    };
+    rec.onerror = e => {
+      if (['not-allowed', 'service-not-allowed', 'audio-capture', 'network', 'language-not-supported'].includes(e.error)) {
+        this.blocked = true;
+        showToast('Voice shooting is unavailable here: use Space to shoot');
+      }
+    };
+    rec.onend = () => { if (this.rec === rec) this.rec = null; };
+    this.lastStart = time;
+    try {
+      rec.start();
+      this.rec = rec;
+    } catch (err) {
+      this.blocked = true;
+    }
+  },
+
+  stop() {
+    if (!this.rec) return;
+    const rec = this.rec;
+    this.rec = null;
+    try { rec.abort(); } catch (err) { /* already stopped */ }
+  },
+
+  /** Some speech was recognised: fire if it contains "shoot". */
+  heard(transcript) {
+    if (SHOOT_WORDS.test(transcript) && state === 'aim' && !isAI(active())) {
+      this.stop();
+      shoot();
+    }
+  },
+
+  toggle() {
+    this.enabled = !this.enabled;
+    if (!this.enabled) this.stop();
+    showToast(this.enabled ? 'Voice shooting on: say "shoot" while aiming' : 'Voice shooting off');
+  },
+
+  /** True when "say shoot" can be offered right now. */
+  available() { return this.enabled && !this.blocked && !!TrashTalk.SR; },
+};
 
 /* ---------- Drawing ---------- */
 
@@ -2246,6 +2320,7 @@ function update(dt) {
   if (!puck && Sound.flight) Sound.stopFlight();     // the puck's flight ended (hit, splash, reset...)
   updateEffects(dt);
   updateTalk(dt);
+  VoiceShoot.update();
 
   if (state !== 'title') {
     updatePoops(dt);
@@ -2870,7 +2945,14 @@ function drawHUD() {
       ctx.fillText('The computer is aiming…', bx + 236, by + 31);
     } else {
       ctx.fillText('↑ / ↓ angle   ← / → power', bx + 236, by + 20);
-      ctx.fillText('Space: SHOOT', bx + 236, by + 42);
+      const shootHint = VoiceShoot.available() ? 'Space or say "shoot"' : 'Space: SHOOT';
+      ctx.fillText(shootHint, bx + 236, by + 42);
+      if (VoiceShoot.rec && Math.floor(time * 2) % 2 === 0) {      // blinking "listening" dot
+        ctx.fillStyle = '#ff5a5a';
+        ctx.beginPath();
+        ctx.arc(bx + 236 + ctx.measureText(shootHint).width + 12, by + 42, 4, 0, TAU);
+        ctx.fill();
+      }
     }
   }
 
@@ -2932,7 +3014,7 @@ function drawTitle() {
 
   const lines = [
     ['Move phase', '← / → walk along the island, Enter to finish moving'],
-    ['Aim phase', '↑ / ↓ change angle, ← / → change power, Space to shoot'],
+    ['Aim phase', '↑ / ↓ change angle, ← / → change power, Space (or say "shoot") to shoot'],
     ['Win by', 'reducing the other squirrel to 0 HP or knocking them into the water'],
     ['Never', 'hit the red button with a puck, or click it. You lose instantly.'],
     [`Round ${CONFIG.BOSS_AFTER_ROUNDS + 1}`, 'a final boss bombs the islands with explosive poop. Lose your whole island and you lose!'],
@@ -2966,7 +3048,12 @@ function drawTitle() {
 
   ctx.font = '16px system-ui, sans-serif';
   ctx.fillStyle = `rgba(255,255,255,${0.6 + 0.4 * Math.sin(time * 4)})`;
-  ctx.fillText('↑ / ↓ choose a mode, ENTER or click to start   ·   vs Computer: you play Red', W / 2, 668);
+  ctx.fillText('↑ / ↓ choose a mode, ENTER or click to start   ·   vs Computer: you play Red', W / 2, 660);
+
+  // How to record a battlecry
+  ctx.font = '14px system-ui, sans-serif';
+  ctx.fillStyle = '#ffd23b';
+  ctx.fillText('Your own battlecry: press B, shout into the mic (up to 3 s), press B again. It plays every time you shoot.', W / 2, 686);
 }
 
 /** Rectangle of the i-th game mode button on the title screen. */
@@ -3052,7 +3139,7 @@ function render() {
   if (state === 'title') {
     drawTitle();
     drawToast();
-    drawSoundIndicator();
+    drawSoundIndicator(true);
     return;
   }
   drawHUD();
@@ -3073,6 +3160,7 @@ window.addEventListener('keydown', e => {
   keys[e.code] = true;
   Sound.unlock();
   if (e.code === 'KeyM' && !e.repeat) Sound.toggleMute();
+  if (e.code === 'KeyV' && !e.repeat) VoiceShoot.toggle();
   if (!e.repeat && players.length) {
     if (e.code === 'KeyB') Battlecry.toggle(battlecryOwner());
     if (state !== 'title') {
