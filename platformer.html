@@ -60,9 +60,9 @@ const LEVELS = [
     '                                                                                                            ',
     '                                                                                                            ',
     '                                                                                                            ',
-    '                                                                                                     GG     ',
     '                          b                                                                          GG     ',
     '                                                                b                                    GG     ',
+    '                                                                                                     GG     ',
     '                        o o o                                                                        GG     ',
     '           o o         ======                                  o o                                   GG     ',
     '          =====                           o o          s      =====                                  GG     ',
@@ -78,8 +78,8 @@ const LEVELS = [
     '                                                                                                                      ',
     '                                                                                                               GG     ',
     '                                                                                                               GG     ',
-    '                                                                       b                                       GG     ',
-    '                          b                     b                                                              GG     ',
+    '                          b                     b                      b                                       GG     ',
+    '                                                                                                               GG     ',
     '                         o  o                                         o                                        GG     ',
     '               o o                     o       oo      o o                                                     GG     ',
     '              =====  m                ###     ====    =====      m                                             GG     ',
@@ -93,10 +93,10 @@ const LEVELS = [
     bg: { sun: '#fff1b0', far: '#f0a98a', near: '#d9826e', snow: '#fff4e8', hill: '#c56a5c', trees: ['#8a3f4a', '#6e2f3c', '#a24f56'], trunk: '#4a2228' }, map: [
     '                                                                                                                      GG      ',
     '                                                                                                                      GG      ',
-    '                                                                                                                      GG      ',
-    '                                                  b                  b          b                                     GG      ',
-    '                                    b                                                                                 GG      ',
-    '                 b                              o                oo                o                                  GG      ',
+    '                                                                     b          b                                     GG      ',
+    '                                    b             b                                                                   GG      ',
+    '                 b                                                                                                    GG      ',
+    '                                                o                oo                o                                  GG      ',
     '                                oo                        k     ====              ===      j s                B       GG  F   ',
     '                          s    ====         m          ######          m                ######################################',
     '         oo   m         ####          ====             ######                           ######################################',
@@ -209,11 +209,13 @@ let movers = [], particles = [], shots = [];
 let levelIndex = 0, state = 'title', now = 0, levelTime = 0, totalCoins = 0, deaths = 0, stateAt = 0, shake = 0;
 let gateClosed = true;
 
-const PW = 26, PH = 42;            // player hitbox (the player is drawn 1.5x the old size)
+const PW = 34, PH = 56;            // player hitbox (the player sprite is drawn 2x)
+const PLAYER_SCALE = 2, ENEMY_SCALE = 1.4, BOSS_SCALE = 1.25;   // how big things are drawn
 
 function makeEnemy(type, x, y) {
-  const S = { slime: [28, 24], hopper: [26, 24], bat: [30, 18], beetle: [32, 24] }[type];
-  return { type, x: x + (T - S[0]) / 2, y: y + T - S[1], w: S[0], h: S[1], vx: type === 'beetle' ? -70 : -55, vy: 0,
+  const S = { slime: [28, 24], hopper: [26, 24], bat: [30, 18], beetle: [32, 24] }[type];   // sprite size before scaling
+  const w = S[0] * ENEMY_SCALE, h = S[1] * ENEMY_SCALE;
+  return { type, x: x + (T - w) / 2, y: y + T - h, w, h, w0: S[0], h0: S[1], vx: type === 'beetle' ? -70 : -55, vy: 0,
            ox: x, oy: y + 6, t: Math.random() * 3, dead: 0, face: -1 };
 }
 
@@ -251,8 +253,9 @@ function loadLevel(i) {
 
 function makeBoss(type, px, py) {
   const d = BOSSES[type];
-  return { type, name: d.name, color: d.color, hp: d.hp, maxHp: d.hp, w: d.w, h: d.h,
-           x: px + T / 2 - d.w / 2, y: py + T - d.h, vx: 0, vy: 0, face: -1, onGround: false,
+  const w = d.w * BOSS_SCALE, h = d.h * BOSS_SCALE;
+  return { type, name: d.name, color: d.color, hp: d.hp, maxHp: d.hp, w, h, w0: d.w, h0: d.h,
+           x: px + T / 2 - w / 2, y: py + T - h, vx: 0, vy: 0, face: -1, onGround: false,
            mode: 'sleep', t: 0, inv: 0, dead: 0, hops: 0 };
 }
 
@@ -701,7 +704,19 @@ function drawBossBar(b) {
   }
 }
 
-function drawEnemy(e) {
+/* Enemies and bosses are drawn at their unscaled sprite size around their
+   bottom centre, then scaled up to fill their (bigger) hitbox. */
+function drawScaled(e, scale, drawFn) {
+  ctx.save();
+  ctx.translate(e.x + e.w / 2, e.y + e.h);
+  ctx.scale(scale, scale);
+  drawFn({ ...e, x: -e.w0 / 2, y: -e.h0, w: e.w0, h: e.h0 });
+  ctx.restore();
+}
+const drawEnemy = e => drawScaled(e, ENEMY_SCALE, drawEnemySprite);
+const drawBoss = b => drawScaled(b, BOSS_SCALE, drawBossSprite);
+
+function drawEnemySprite(e) {
   const squash = e.dead ? 0.3 : 1;
   ctx.save();
   if (e.dead) ctx.globalAlpha = 1 - e.dead / 0.4;
@@ -740,7 +755,7 @@ function eyes(x, y, face, white = '#fff') {
   ctx.fillStyle = '#123'; ctx.fillRect(x - 6 + ex + face, y - 2, 3, 4); ctx.fillRect(x + 4 + ex + face, y - 2, 3, 4);
 }
 
-function drawBoss(b) {
+function drawBossSprite(b) {
   ctx.save();
   if (b.dead) ctx.globalAlpha = 1 - b.dead / 0.5;
   if (b.inv > 0 && Math.floor(now * 16) % 2) ctx.globalAlpha = 0.35;
@@ -798,7 +813,7 @@ function drawPlayer(p) {
   const run = Math.abs(p.vx) > 20 && p.onGround ? Math.sin(now * 20) : 0;
   ctx.save();
   ctx.translate(p.x + p.w / 2, p.y + p.h);
-  ctx.scale(p.face * 1.5, 1.5);                  // drawn 1.5x bigger than the original sprite
+  ctx.scale(p.face * PLAYER_SCALE, PLAYER_SCALE);
   // legs
   ctx.fillStyle = '#2b3a67';
   ctx.fillRect(-8 + run * 3, -9, 6, 9); ctx.fillRect(2 - run * 3, -9, 6, 9);
