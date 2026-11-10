@@ -77,6 +77,13 @@ button:focus-visible{outline:3px solid var(--bulb);outline-offset:3px}
   box-shadow:0 8px 0 rgba(0,0,0,.28);display:flex;flex-direction:column;transition:transform .15s ease,border-color .15s ease}
 .card:not(.locked):hover{transform:translateY(-4px);border-color:var(--bulb)}
 .card .art{height:118px;display:grid;place-items:center;font-size:3.4rem;background:var(--art)}
+/* cards with a real snapshot from the game */
+.card .art.shot{height:150px;position:relative;overflow:hidden;display:block}
+.card .art.shot img{display:block;width:100%;height:100%;object-fit:cover;transition:transform .45s ease}
+.card .art.shot::after{content:'';position:absolute;left:0;right:0;bottom:0;height:45%;background:linear-gradient(transparent,var(--card));pointer-events:none}
+.card .art.shot .badge{position:absolute;left:10px;top:10px;z-index:1;font-size:1.25rem;line-height:1;padding:6px 8px;border-radius:12px;background:rgba(20,10,40,.55);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
+.card:not(.locked):hover .art.shot img{transform:scale(1.07)}
+@media (prefers-reduced-motion:reduce){.card .art.shot img{transition:none}}
 .card .body{padding:14px 16px 16px;display:flex;flex-direction:column;gap:6px;flex:1}
 .card .num{font-size:.85rem;color:var(--muted);font-weight:700}
 .card h3{font-size:1.4rem;font-weight:900}
@@ -3128,7 +3135,7 @@ class IceBrawlFP extends IceBrawl {
    ===================================================================== */
 const GAMES = [
   {
-    id: 'jet', name: 'Jet Escape', icon: '✈️', overTitle: 'Shot down!',
+    id: 'jet', img: 'img/cards/jet.webp', name: 'Jet Escape', icon: '✈️', overTitle: 'Shot down!',
     art: 'linear-gradient(180deg,#5ec4ff 0%,#bfe9ff 55%,#ffd08a 100%)',
     desc: 'Fly your fighter jet in 3D across Sweden, from Linköping to the Norwegian border, and dodge the incoming missiles.',
     howTo: 'Fly with W A S D or the arrow keys: W climbs, S dives, A and D steer. Space or a tap also boosts you up. Dodge the missiles coming at you (their shadows on the ground help), steer round the purple jammed zones and don\'t touch the ground. Survive 60 seconds to win, but first you must dodge the final nuke. It follows you, so move when it says DODGE NOW!',
@@ -3137,7 +3144,7 @@ const GAMES = [
     create: v => (gl3() ? new JetEscape3D(v) : new JetEscape(v))   // 3D when WebGL works, else the 2D version
   },
   {
-    id: 'brawl', name: 'Ice Brawl', icon: '🏒', overTitle: 'Down on the ice!', meterLabel: 'Balance',
+    id: 'brawl', img: 'img/cards/brawl.webp', name: 'Ice Brawl', icon: '🏒', overTitle: 'Down on the ice!', meterLabel: 'Balance',
     art: 'linear-gradient(180deg,#1b2440 0%,#2a3456 50%,#dcefff 50%,#f4faff 100%)',
     desc: 'Gloves off, 1v1 on the ice. Duck the punches and stay on your skates.',
     howTo: 'When a red ! appears over your opponent, tap to duck and counter. Tapping at the wrong time makes you wobble and lose balance.',
@@ -3148,12 +3155,12 @@ const GAMES = [
   {
     // Game 3 is a separate two-player page, so the card just links to it
     // (it is not part of the survival score or "Play all games").
-    id: 'squirrels', name: 'Slapshot Squirrels', icon: '🐿️', href: 'slapshot-squirrels.html',
+    id: 'squirrels', img: 'img/cards/squirrels.webp', name: 'Slapshot Squirrels', icon: '🐿️', href: 'slapshot-squirrels.html',
     art: 'linear-gradient(180deg,#5fb3ea 0%,#d6efff 62%,#2f7fcf 62%,#16407a 100%)',
     desc: 'Two-player artillery: slap exploding pucks at your rival across the water. Never touch the red button.'
   },
   {
-    id: 'brawlfp', name: 'Ice Brawl: Face-Off', icon: '👊', overTitle: 'Down on the ice!', meterLabel: 'Balance',
+    id: 'brawlfp', img: 'img/cards/brawlfp.webp', name: 'Ice Brawl: Face-Off', icon: '👊', overTitle: 'Down on the ice!', meterLabel: 'Balance',
     art: 'radial-gradient(circle at 50% 38%,#e63946 0 22%,transparent 23%),linear-gradient(180deg,#1b2440 0%,#2a3456 55%,#dcefff 55%,#f4faff 100%)',
     desc: 'First-person hockey fight. Punch and block with each hand, knock out your rival, then Kim Jong Un and Trump.',
     howTo: '<b>Q</b>/<b>E</b> punch, <b>Z</b>/<b>C</b> fake, hold <b>A</b>/<b>D</b> to block (touch: top fakes, middle punches, bottom blocks). Block just before a hit for a <b>PERFECT</b>. Fake, then hit the other side for a <b>FAKE-OUT</b>. <b>Scream</b> into the mic when they block to stun them.',
@@ -3163,7 +3170,7 @@ const GAMES = [
   },
   {
     // Game 6 is a separate platformer page, linked like Slapshot Squirrels
-    id: 'hophop', name: 'Hop Hop Hill', icon: '🦡', href: 'platformer.html', tag: '1 player · Opens the game',
+    id: 'hophop', img: 'img/cards/hophop.webp', name: 'Hop Hop Hill', icon: '🦡', href: 'platformer.html', tag: '1 player · Opens the game',
     art: 'linear-gradient(180deg,#7fd3ff 0%,#d9f3ff 60%,#4fbf4a 60%,#8a5a34 100%)',
     desc: 'A platformer starring a cartoon badger: run, jump, stomp enemies and beat a boss at the end of each of the three levels.'
   }
@@ -3216,7 +3223,9 @@ function renderHub() {
     b.className = 'card' + (g.locked ? ' locked' : '');
     b.style.setProperty('--art', g.art);
     const sc = best[g.id] || 0;
-    b.innerHTML = `<div class="art">${g.icon}</div><div class="body"><span class="num">Game ${i + 1}</span><h3>${g.name}</h3><p>${g.desc}</p>` +
+    const art = g.img ? `<div class="art shot"><img src="${g.img}" alt="" loading="lazy" onerror="this.parentNode.classList.remove('shot');this.remove()"><span class="badge">${g.icon}</span></div>`
+                      : `<div class="art">${g.icon}</div>`;
+    b.innerHTML = `${art}<div class="body"><span class="num">Game ${i + 1}</span><h3>${g.name}</h3><p>${g.desc}</p>` +
       (g.href ? `<div class="best"><span>${g.tag || '2 players · Opens the game'}</span></div>` :
        g.locked ? `<div class="best">Locked</div>` :
        g.winOnly ? `<div class="best"><span>${wins[g.id] ? '🏆 Champion' : 'Not beaten yet'}</span></div>` :
