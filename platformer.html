@@ -6,7 +6,7 @@
 <title>Hop Hop Hill</title>
 <!--
   HOP HOP HILL
-  A simple side-scrolling platformer. Run, jump, grab coins, stomp the
+  A simple side-scrolling platformer starring a cartoon badger. Run, jump, grab coins, stomp the
   enemies, avoid the spikes, beat the boss at the end of each level and
   reach the flag. Three levels.
 
@@ -872,21 +872,56 @@ function drawBossSprite(b) {
   ctx.restore();
 }
 
+/* The player: a cartoon badger standing on its hind legs. Drawn facing right
+   in sprite units (feet at 0, about 30 units tall), then scaled up. */
 function drawPlayer(p) {
-  const run = Math.abs(p.vx) > 20 && p.onGround ? Math.sin(now * 20) : 0;
+  const moving = Math.abs(p.vx) > 20 && p.onGround;
+  const run = moving ? Math.sin(now * 20) : 0;
+  const bob = moving ? Math.abs(Math.sin(now * 20)) * 0.8 : 0;
+  const air = !p.onGround;
   ctx.save();
   ctx.translate(p.x + p.w / 2, p.y + p.h);
   ctx.scale(p.face * PLAYER_SCALE, PLAYER_SCALE);
-  // legs
-  ctx.fillStyle = '#2b3a67';
-  ctx.fillRect(-8 + run * 3, -9, 6, 9); ctx.fillRect(2 - run * 3, -9, 6, 9);
-  // body
-  ctx.fillStyle = '#ff7a3d'; ctx.beginPath(); ctx.roundRect(-10, -24, 20, 17, 5); ctx.fill();
-  // head + eye
-  ctx.fillStyle = '#ffd9b3'; ctx.beginPath(); ctx.arc(1, -26, 7, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#222'; ctx.fillRect(4, -28, 2.5, 3);
-  // cap
-  ctx.fillStyle = '#3a7bd5'; ctx.fillRect(-7, -33, 15, 5); ctx.fillRect(2, -30, 9, 3);
+  const GREY = '#8d8c93', DARK = '#2b2a30', LIGHT = '#c9c8cf', WHITE = '#fbfaf7';
+  const ell = (x, y, rx, ry, rot = 0) => { ctx.beginPath(); ctx.ellipse(x, y, rx, ry, rot, 0, Math.PI * 2); ctx.fill(); };
+
+  // tail: a short grey tuft behind
+  ctx.fillStyle = GREY; ell(-9.5, -9 - bob, 3.4, 2.2, -0.6);
+  ctx.fillStyle = LIGHT; ell(-11, -10 - bob, 1.6, 1.1, -0.6);
+  // legs: short and black, with little claws
+  ctx.fillStyle = DARK;
+  const legA = air ? -2 : run * 3, legB = air ? 2 : -run * 3;
+  ctx.beginPath(); ctx.roundRect(-6 + legA, -8, 5, 8, 2); ctx.fill();
+  ctx.beginPath(); ctx.roundRect(1.5 + legB, -8, 5, 8, 2); ctx.fill();
+  ctx.fillStyle = LIGHT;
+  ctx.fillRect(-2.2 + legA, -1, 1, 1); ctx.fillRect(5.3 + legB, -1, 1, 1);
+  // body: round and grey with a pale belly
+  ctx.fillStyle = GREY; ell(0, -13 - bob, 9, 8.5);
+  ctx.fillStyle = LIGHT; ell(2.5, -12 - bob, 5, 6);
+  // arms: black, swinging opposite to the legs (raised when jumping)
+  ctx.fillStyle = DARK;
+  if (air) { ell(6.5, -18 - bob, 2.2, 4, -0.9); ell(-6, -18 - bob, 2.2, 4, 0.9); }
+  else { ell(6 - run * 1.5, -12 - bob, 2.1, 4, 0.3); ell(-5.5 + run * 1.5, -12 - bob, 2.1, 4, -0.3); }
+
+  // head
+  const hy = -24 - bob;
+  ctx.fillStyle = GREY; ell(-4, hy - 6.5, 2.6, 2.6); ell(3, hy - 7.2, 2.6, 2.6);   // ears
+  ctx.fillStyle = DARK; ell(-4, hy - 6.5, 1.3, 1.3); ell(3, hy - 7.2, 1.3, 1.3);
+  ctx.fillStyle = WHITE; ell(1, hy, 8, 7);                 // white face
+  ell(7.5, hy + 1.8, 5, 3.4, 0.1);                          // pointy snout
+  // the badger stripes: black bands from the snout over the eyes to the ears
+  ctx.fillStyle = DARK;
+  ell(3.2, hy - 2.2, 7.2, 2.4, -0.42);
+  ell(-3.6, hy - 1.2, 5.2, 2.3, -1.1);
+  // eye (in the stripe) with a shine
+  ctx.fillStyle = WHITE; ell(4.6, hy - 2.6, 1.6, 1.8);
+  ctx.fillStyle = '#111'; ell(5.1, hy - 2.4, 0.9, 1.2);
+  ctx.fillStyle = WHITE; ell(5.4, hy - 3, 0.35, 0.35);
+  // nose, smile and a little pink cheek
+  ctx.fillStyle = '#111'; ell(12.2, hy + 1.2, 1.8, 1.4);
+  ctx.strokeStyle = '#111'; ctx.lineWidth = 0.6;
+  ctx.beginPath(); ctx.moveTo(8.2, hy + 3.6); ctx.quadraticCurveTo(9.8, hy + 4.8, 11.2, hy + 3.4); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,140,160,.55)'; ell(4.5, hy + 2.6, 1.6, 1);
   ctx.restore();
 }
 
