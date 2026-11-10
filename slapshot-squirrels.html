@@ -11,6 +11,10 @@
   each other. Whatever you do: DO NOT touch the red button.
 
   Sound effects are synthesized in the browser (Web Audio API); M mutes.
+  Microphone extras: T = trash talk (speech bubbles; the AI talks back, heckles
+  during your turn and loves to mock Färjestad, Oskarshamn and Linköping),
+  B = record your own battlecry that plays when you shoot.
+  Voice shooting: while aiming, say "shoot" (or "skjut") instead of pressing Space; V turns it off.
 
   Modes: 2 players on one keyboard (hot-seat), or play Red against a
   computer-controlled Blue on Easy, Normal or Hard (see AI_LEVELS).
@@ -45,10 +49,30 @@
     background: #8fd0f5;
     box-shadow: 0 0 40px rgba(0, 0, 0, 0.5);
   }
+  /* Text box for trash talk when speech recognition isn't available */
+  #talkInput {
+    display: none;
+    position: fixed;
+    left: 50%;
+    bottom: 14%;
+    transform: translateX(-50%);
+    width: min(560px, 86vw);
+    box-sizing: border-box;
+    padding: 12px 16px;
+    font: 18px system-ui, sans-serif;
+    color: #fff;
+    background: rgba(10, 20, 35, 0.92);
+    border: 2px solid #ffd23b;
+    border-radius: 12px;
+    outline: none;
+  }
+  #talkInput.show { display: block; }
+  #talkInput::placeholder { color: rgba(255, 255, 255, 0.6); }
 </style>
 </head>
 <body>
 <canvas id="game" width="1280" height="720"></canvas>
+<input id="talkInput" type="text" maxlength="90" autocomplete="off" spellcheck="false">
 
 <script>
 'use strict';
@@ -416,7 +440,7 @@ let menuIndex = 0;
 let gameMode = MENU[0];
 
 // The AI's plan for the current turn
-const ai = { wait: 0, dir: 1, walkLeft: 0, targetAim: 45, targetPower: 50, aimed: false };
+const ai = { wait: 0, dir: 1, walkLeft: 0, targetAim: 45, targetPower: 50, aimed: false, chatTimer: 4 };
 
 const active = () => players[current];
 const isAI = p => gameMode.ai && p.index === 1;
@@ -476,6 +500,8 @@ function newGame(startNow) {
   megaStage = false;
   megaOnRaft = false;
   megaDelivery = null;
+  bubbles = [null, null];
+  pendingReply = null;
   buttonEvent = null;
   result = null;
   randomizeWind();
@@ -499,6 +525,7 @@ function beginTurn() {
   const firstTurnOfRound = turnNumber % 2 === 0;
   showBanner(`${displayName(p)}'s turn`, p.color, firstTurnOfRound && !megaStage ? bossCountdownText() : null);
   if (isAI(p)) aiBeginTurn(p);
+  ai.chatTimer = rand(3, 6);              // when the AI starts heckling during a human's turn
 }
 
 /** Rounds left before the boss's first appearance (0 once it has arrived). */
@@ -548,6 +575,7 @@ function startAiming() {
 function shoot() {
   state = 'swing';
   active().swingT = 0;
+  if (!isAI(active())) Battlecry.play(active().index);   // the player's own battlecry, if recorded
 }
 
 /** Waits for explosions, falling squirrels etc. before the next turn. */
@@ -588,6 +616,10 @@ function showGameOver() {
     : { winner: players.find(p => !losers.includes(p)), losers };
   state = 'gameover';
   gameOverTimer = 0;
+  if (gameMode.ai) {
+    if (result.winner === players[1]) aiTaunt('won', 1, true);
+    else if (result.losers.includes(players[1])) aiTaunt('lost', 1, true);
+  }
 }
 
 function defeatMessage(p) {
@@ -899,6 +931,7 @@ function resolvePuckHit(hit) {
     case 'water':                       // harmless splash
       spawnSplash(x, CONFIG.WATER_Y, 22);
       floatTexts.push({ x, y: CONFIG.WATER_Y - 30, text: 'Splash!', color: '#ffffff', life: 1.2 });
+      if (!isAI(owner)) aiTaunt('youMissed');
       puck = null;
       enterSettle();
       break;
@@ -925,6 +958,7 @@ function distanceToBody(p, x, y) {
 function explode(x, y, shooter = null) {
   const mega = shooter && shooter.mega;
   const damageMult = mega ? CONFIG.MEGA_DAMAGE_MULT : 1;
+  const damageTo = [0, 0];
   puck = null;
   carveCrater(x, y, CONFIG.CRATER_RADIUS * (mega ? CONFIG.MEGA_CRATER_MULT : 1));
 
@@ -935,6 +969,7 @@ function explode(x, y, shooter = null) {
     const dmg = Math.round(CONFIG.MAX_DAMAGE * damageMult * (1 - d / CONFIG.DAMAGE_RADIUS));
     if (dmg <= 0) continue;
     p.health = Math.max(0, p.health - dmg);
+    damageTo[p.index] = dmg;
     p.hurtT = 0.7;
     applyKnockback(p, x, 1 - d / CONFIG.DAMAGE_RADIUS);
     floatTexts.push({ x: p.x, y: p.y - p.height - 17, text: `-${dmg}`, color: p.color, life: 1.4 });
@@ -943,6 +978,9 @@ function explode(x, y, shooter = null) {
   spawnExplosion(x, y);
   Sound.poff(false);
   shake = 10;
+  // The computer gloats or complains
+  if (shooter && isAI(shooter) && damageTo[0] >= 15) aiTaunt('hitYou');
+  else if (shooter && !isAI(shooter) && damageTo[1] >= 15) aiTaunt('gotHit');
   enterSettle();
 }
 
@@ -1480,6 +1518,7 @@ function updateMegaDelivery(dt) {
     randomizeWind();
     current = 0;
     beginTurn();
+    say(m, aiLine('intro'));
   }
 }
 
@@ -1696,6 +1735,16 @@ const Sound = {
   },
 
   slapshot(power) { if (this.ready()) SFX.slapshot(this.ac, this.master, this.ac.currentTime, power); },
+  /** Plays a recorded sound (a battlecry) a bit louder than the effects. */
+  playBuffer(buf) {
+    if (!this.ready()) return;
+    const src = this.ac.createBufferSource();
+    src.buffer = buf;
+    const g = this.ac.createGain();
+    g.gain.value = 1.6;
+    src.connect(g).connect(this.master);
+    src.start();
+  },
   poff(big) { if (this.ready()) SFX.poff(this.ac, this.master, this.ac.currentTime, big); },
   splash(size) { if (this.ready()) SFX.splash(this.ac, this.master, this.ac.currentTime, size); },
   startFlight() {
@@ -1710,12 +1759,556 @@ const Sound = {
 };
 
 /** Small "Sound on/off (M)" note in the bottom-right corner. */
-function drawSoundIndicator() {
+function drawSoundIndicator(onTitle = false) {
   ctx.font = '13px system-ui, sans-serif';
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = 'rgba(255,255,255,0.75)';
   ctx.fillText(Sound.muted ? 'Sound off · M' : 'Sound on · M', W - 14, H - 14);
+  if (onTitle) return;                       // the title screen explains these itself
+  const talkKeys = gameMode.ai ? 'T: trash talk' : 'T / Y: trash talk (Red / Blue)';
+  ctx.fillText(`${talkKeys} · B: record battlecry · V: voice shooting ${VoiceShoot.enabled ? 'on' : 'off'}`, W - 14, H - 32);
+}
+
+/* ======================================================================
+ * 8f. TRASH TALK AND BATTLECRIES
+ *    Trash talk (T, and Y for Blue in 2-player mode): speak into the
+ *    microphone and your words appear in a speech bubble over your squirrel
+ *    (browser speech recognition). Against the computer, the AI answers
+ *    with a line matched to what you said, in English or Swedish, and taunts
+ *    on its own when shots hit or miss. Where speech recognition isn't
+ *    available (or the microphone is blocked), a text box opens instead.
+ *
+ *    Battlecry (B): record up to 3 seconds from the microphone. It plays
+ *    whenever that player shoots, on top of the normal slapshot sound.
+ *    Battlecries are kept for this browser session only.
+ * ====================================================================== */
+let bubbles = [null, null];   // current speech bubble per player: { text, t, dur, listening }
+let pendingReply = null;      // AI answer waiting to be said: { t, text }
+let toast = null;             // short status message: { text, t }
+let lastTauntAt = -99;        // time of the AI's last unprompted taunt
+let talkLang = (navigator.language || '').toLowerCase().startsWith('sv') ? 'sv' : 'en';
+
+const pickFrom = arr => arr[Math.floor(Math.random() * arr.length)];
+
+/** Shows a speech bubble over a squirrel. */
+function say(p, text) {
+  bubbles[p.index] = { text, t: 0, dur: clamp(2.5 + text.length * 0.06, 2.5, 7), listening: false };
+}
+
+function showToast(text) {
+  toast = { text, t: 0 };
+}
+
+/* ---------- What the computer says ---------- */
+const AI_LINES = {
+  en: {
+    button: ["The button? I'm not THAT stupid. Probably.", 'Keep talking about the button. I dare you to press it.', 'That button has your name on it, pal.'],
+    water: ["You'll be the one swimming, fuzzball.", 'Hope you brought floaties.', 'The fish are waiting for you.'],
+    poop: ['The seagull is on MY side.', "Watch out, it's raining... you know what."],
+    miss: ['Miss? Me? Check the scoreboard.', "I don't miss. I just warm up.", 'Says the squirrel who hit the ocean.'],
+    easy: ['Easy mode is for you, not me.', "I'm going easy on you. For now."],
+    lose: ['Winning is my thing. Losing is yours.', "You'll lose so hard your acorns will cry.", 'Only one of us is winning, and it has a blue helmet.'],
+    insult: ['Rubber, glue, you know the rest.', 'Big words from a small rodent.', "I've been insulted by better squirrels. Actually, no I haven't."],
+    question: ['Ask me again after this shot.', 'Answer: no.'],
+    generic: ["Is that all you've got?", 'Nice speech. Now watch this slapshot.', 'Talk is cheap. Pucks are explosive.', 'Did you practice that in the mirror?', 'Bla bla bla. Shoot already.', 'Your helmet is ugly. Just saying.'],
+    behind: ["Lucky shots don't count.", "I'm just letting you feel good before the end.", 'Fine, you hit me once. Twice. Whatever.'],
+    hitYou: ['BOOM! Right in the helmet!', 'Did that tickle?', 'Special delivery: one puck!'],
+    gotHit: ['Ow! Lucky shot!', 'Hey! That was my good side!', "Okay, now I'm angry."],
+    youMissed: ['Splash! Nice shot... for a fish.', 'The water says thanks!', 'Were you aiming for the sea?'],
+    won: ['GG. Get good.', 'Better luck next time, fuzzball.'],
+    lost: ["Nooo! I'll get you next time!"],
+  },
+  sv: {
+    button: ['Knappen? Så dum är jag inte. Typ.', 'Tryck på knappen du, om du vågar.', 'Den knappen har ditt namn på sig.'],
+    water: ['Det är du som ska bada, pälsboll.', 'Hoppas du har armpuffar med dig.', 'Fiskarna väntar på dig.'],
+    poop: ['Måsen är på MIN sida.', 'Akta dig, det regnar... du vet vad.'],
+    miss: ['Missa? Jag? Kolla ställningen.', 'Jag missar inte, jag värmer upp.', 'Sa ekorren som träffade havet.'],
+    easy: ['Lätt läge är till för dig, inte mig.', 'Jag tar det lugnt med dig. Än så länge.'],
+    lose: ['Att vinna är min grej. Att förlora är din.', 'Du kommer förlora så mycket att dina ekollon gråter.', 'Bara en av oss vinner, och den har blå hjälm.'],
+    insult: ['Det du säger är det du är.', 'Stora ord från en liten gnagare.', 'Jag har blivit förolämpad av bättre ekorrar. Nej, förresten.'],
+    question: ['Fråga igen efter det här skottet.', 'Svar: nej.'],
+    generic: ['Är det allt du har?', 'Fint tal. Kolla nu på det här slagskottet.', 'Snack är billigt. Puckar exploderar.', 'Har du övat på det framför spegeln?', 'Bla bla bla. Skjut nu.', 'Din hjälm är ful. Bara så du vet.'],
+    behind: ['Turskott räknas inte.', 'Jag låter dig bara må bra innan slutet.', 'Okej, du träffade en gång. Två. Whatever.'],
+    hitYou: ['PANG! Rakt i hjälmen!', 'Kittlades det?', 'Expressleverans: en puck!'],
+    gotHit: ['Aj! Turskott!', 'Hallå! Det var min bra sida!', 'Okej, nu blir jag arg.'],
+    youMissed: ['Plask! Snyggt skott... för en fisk.', 'Vattnet säger tack!', 'Siktade du på havet?'],
+    won: ['GG. Bli bättre.', 'Bättre lycka nästa gång, pälsboll.'],
+    lost: ['Neeej! Nästa gång tar jag dig!'],
+  },
+};
+const MEGA_LINES = {
+  en: {
+    generic: ['SMALL SQUIRREL. SMALL WORDS.', 'I EAT SQUIRRELS LIKE YOU FOR BREAKFAST. WITH ACORNS.', 'HA! HA! HA! ...NO.', 'YOUR WORDS BOUNCE OFF MY HUGE HELMET.'],
+    intro: ['YOU BEAT MY LITTLE BROTHER. NOW FACE ME!'],
+    hitYou: ['MEGA PUCK! MEGA PAIN!'],
+    gotHit: ['THAT... TICKLED.'],
+    youMissed: ['THE SEA AGREES WITH ME.'],
+    won: ['BOW BEFORE THE MEGA SQUIRREL!'],
+    lost: ['NOOOO! THE SEAGULL WILL AVENGE ME!'],
+  },
+  sv: {
+    generic: ['LITEN EKORRE. SMÅ ORD.', 'JAG ÄTER EKORRAR SOM DIG TILL FRUKOST.', 'HA! HA! HA! ...NEJ.', 'DINA ORD STUDSAR PÅ MIN JÄTTEHJÄLM.'],
+    intro: ['DU SLOG MIN LILLEBROR. MÖT MIG NU!'],
+    hitYou: ['MEGAPUCK! MEGASMÄRTA!'],
+    gotHit: ['DET DÄR... KITTLADES.'],
+    youMissed: ['HAVET HÅLLER MED MIG.'],
+    won: ['BUGA FÖR MEGAEKORREN!'],
+    lost: ['NEEEJ! MÅSEN SKA HÄMNAS!'],
+  },
+};
+
+// Things the computer says while YOU are moving and aiming
+AI_LINES.en.waiting = ['Tick tock! My acorns are getting old.', "Take your time. I'll just stand here being awesome.",
+  'Aim for the button. I dare you.', 'Are you aiming or napping?', "Whatever you do, don't miss. Oh wait, you will."];
+AI_LINES.sv.waiting = ['Tick tack! Mina ekollon blir gamla.', 'Ta din tid. Jag står här och är grym.',
+  'Sikta på knappen. Om du vågar.', 'Siktar du eller sover du?', 'Vad du än gör, missa inte. Hoppsan, det gör du ju.'];
+MEGA_LINES.en.waiting = ['HURRY UP, TINY SQUIRREL.', 'I HAVE BEEN WAITING SINCE THE ICE AGE.'];
+MEGA_LINES.sv.waiting = ['SKYNDA DIG, LILLA EKORRE.', 'JAG HAR VÄNTAT SEDAN ISTIDEN.'];
+
+// Hockey teams the computer loves to trash talk (friendly rivalry banter)
+const TALK_TEAMS = {
+  farjestad: { name: 'Färjestad', re: /färjestad|farjestad|\bfbk\b|karlstad/ },
+  oskarshamn: { name: 'Oskarshamn', re: /oskarshamn|\biko\b/ },
+  linkoping: { name: 'Linköping', re: /linköping|linkoping|\blhc\b/ },
+};
+const TEAM_LINES = {
+  en: {
+    farjestad: ['You play like Färjestad on a bad day: loud fans, no goals.',
+      "Even Färjestad's water bottles shoot better than you.",
+      'The sun shines in Karlstad, but it sure never shines on your aim.',
+      'Färjestad fan? That explains the aim.'],
+    oskarshamn: ['Oskarshamn called. They want their power play back.',
+      'Oskarshamn has a nuclear plant and still less firepower than me.',
+      'You shoot like Oskarshamn on a long bus trip: tired and way off.',
+      'Is that an Oskarshamn slapshot? I barely felt the breeze.'],
+    linkoping: ['Linköping builds fighter jets. You can\'t even build a decent shot.',
+      'My seagull jet was built in Linköping. Fast, loud and better than you.',
+      'You aim like a Linköping defenceman: eyes closed and hoping.',
+      'Linköping fan? I can tell by how you aim.'],
+  },
+  sv: {
+    farjestad: ['Du spelar som Färjestad en dålig dag: mycket sång på läktaren, inga mål.',
+      'Till och med Färjestads vattenflaskor skjuter bättre än du.',
+      'Solen skiner i Karlstad, men aldrig på ditt sikte.',
+      'Färjestadsfan? Det förklarar siktet.'],
+    oskarshamn: ['Oskarshamn ringde. De vill ha tillbaka sitt powerplay.',
+      'Oskarshamn har ett kärnkraftverk och ändå mindre eldkraft än jag.',
+      'Du skjuter som Oskarshamn på en lång bussresa: trött och helt fel.',
+      'Var det ett Oskarshamnsskott? Jag kände knappt fläkten.'],
+    linkoping: ['I Linköping bygger de stridsflyg. Du kan inte ens bygga ett skott.',
+      'Min måsjet byggdes i Linköping. Snabb, högljudd och bättre än du.',
+      'Du siktar som en LHC-back: blunda och hoppas.',
+      'LHC-fan? Det märks på siktet.'],
+  },
+};
+
+/** A jab at one of the teams (a random one if none is given). */
+function teamLine(team = pickFrom(Object.keys(TALK_TEAMS))) {
+  if (players[1] && players[1].mega) {
+    const n = TALK_TEAMS[team].name.toUpperCase();
+    return pickFrom(talkLang === 'sv'
+      ? [`${n}? JAG ÄTER ${n}-FANS TILL FRUKOST!`, `${n}? ALDRIG HÖRT TALAS OM DEM.`]
+      : [`${n}? I EAT ${n} FANS FOR BREAKFAST!`, `${n}? NEVER HEARD OF THEM.`]);
+  }
+  return pickFrom(TEAM_LINES[talkLang][team]);
+}
+
+// What the player said -> which kind of answer (checked in this order; English and Swedish words)
+const TALK_TOPICS = [
+  ['button', /button|knapp/],
+  ['water', /water|swim|drown|sea\b|ocean|wet\b|vatten|bada|simma|drunkn|havet|blöt/],
+  ['poop', /poop|poo\b|bird|seagull|gull|bajs|fågel|mås|skit/],
+  ['miss', /miss|bom\b|träffar inte/],
+  ['easy', /easy|lätt|enkel/],
+  ['lose', /lose|loser|win|beat|förlora|förlorar|vinn|slå/],
+  ['insult', /bad|noob|suck|trash|ugly|stupid|dumb|idiot|terrible|weak|dålig|kass|usel|ful|dum|svag|tönt/],
+  ['question', /\?\s*$|^(why|what|how|who|varför|vad|hur|vem)\b/],
+];
+
+/** Guesses whether a sentence is Swedish (otherwise English). */
+function detectLang(text) {
+  // Team names like "Linköping" have Swedish letters but say nothing about the language
+  const t = ` ${text.toLowerCase().replace(/färjestad|linköping|oskarshamn/g, '')} `;
+  return /[åäö]/.test(t) || / (jag|du|är|inte|och|det|din|dig|kommer|vad|hej|heja|ska|aldrig|vi|ni|vinner|kom igen|bra|mig) /.test(t) ? 'sv' : 'en';
+}
+
+/** One line of the computer's (or the Mega Squirrel's) kind. */
+function aiLine(kind) {
+  // Now and then, the trash talk turns to hockey teams
+  if (['generic', 'waiting', 'youMissed'].includes(kind) && Math.random() < 0.35) return teamLine();
+  const set = (players[1].mega ? MEGA_LINES : AI_LINES)[talkLang];
+  return pickFrom(set[kind] || set.generic);
+}
+
+/** The computer's answer to something the player said. */
+function aiAnswer(heard) {
+  talkLang = detectLang(heard);
+  const text = heard.toLowerCase();
+  const team = Object.keys(TALK_TEAMS).find(k => TALK_TEAMS[k].re.test(text));
+  if (team) return teamLine(team);                  // you mentioned a team: the AI mocks it
+  if (players[1].mega) return aiLine('generic');
+  const topic = TALK_TOPICS.find(([, re]) => re.test(text));
+  if (topic) return aiLine(topic[0]);
+  const behind = players[1].health < players[0].health;
+  return aiLine(behind && Math.random() < 0.5 ? 'behind' : 'generic');
+}
+
+/** Unprompted AI taunt after something happens (at most every 6 s unless forced). */
+function aiTaunt(kind, chance = 0.6, force = false) {
+  if (!gameMode.ai || players.length < 2) return;
+  if (!force && (time - lastTauntAt < 6 || Math.random() > chance || (bubbles[1] && !bubbles[1].listening))) return;
+  lastTauntAt = time;
+  say(players[1], aiLine(kind));
+}
+
+/* ---------- Listening to the player ---------- */
+const talkInput = document.getElementById('talkInput');
+
+const TrashTalk = {
+  SR: window.SpeechRecognition || window.webkitSpeechRecognition || null,
+  rec: null,           // active speech recognition
+  speaker: null,       // player who is talking
+  useTyping: false,    // switched on when speech recognition can't be used
+
+  /** T / Y pressed: start talking, or stop listening if already listening. */
+  toggle(p) {
+    if (this.rec) { this.rec.stop(); return; }
+    VoiceShoot.stop();                     // the microphone is needed for talking now
+    if (this.isTyping() || Battlecry.recording) return;
+    this.speaker = p;
+    if (this.SR && !this.useTyping) this.listen(p);
+    else this.openTyping(p);
+  },
+
+  listen(p) {
+    const rec = new this.SR();
+    rec.lang = navigator.language || 'en-US';
+    rec.interimResults = true;
+    rec.continuous = false;
+    let finalText = '';
+    let fallBack = false;
+    rec.onresult = e => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) finalText += e.results[i][0].transcript;
+        else interim += e.results[i][0].transcript;
+      }
+      bubbles[p.index] = { text: (finalText + interim).trim() || '…', t: 0, dur: 99, listening: true };
+    };
+    rec.onerror = e => {
+      if (['not-allowed', 'service-not-allowed', 'network', 'audio-capture', 'language-not-supported'].includes(e.error)) {
+        this.useTyping = true;
+        fallBack = true;
+        showToast(e.error === 'not-allowed' || e.error === 'service-not-allowed'
+          ? 'No microphone access: type your trash talk instead'
+          : 'Speech recognition unavailable: type your trash talk instead');
+      }
+    };
+    rec.onend = () => {
+      this.rec = null;
+      const text = finalText.trim();
+      if (text) this.said(p, text);
+      else if (bubbles[p.index] && bubbles[p.index].listening) bubbles[p.index] = null;
+      if (fallBack && !text) this.openTyping(p);
+    };
+    bubbles[p.index] = { text: '🎤 Listening…', t: 0, dur: 99, listening: true };
+    try {
+      rec.start();
+      this.rec = rec;
+    } catch (err) {
+      bubbles[p.index] = null;
+      this.useTyping = true;
+      this.openTyping(p);
+    }
+  },
+
+  openTyping(p) {
+    this.speaker = p;
+    for (const k in keys) keys[k] = false;          // the game stops reading keys while typing
+    talkInput.value = '';
+    talkInput.placeholder = `${p.name}: type your trash talk, Enter to say it, Esc to cancel`;
+    talkInput.classList.add('show');
+    talkInput.focus();
+  },
+  isTyping() { return talkInput.classList.contains('show'); },
+  closeTyping() {
+    talkInput.classList.remove('show');
+    talkInput.blur();
+  },
+
+  /** The player finished a sentence: show it, and let the computer answer. */
+  said(p, text) {
+    say(p, text);
+    if (gameMode.ai && !isAI(p)) pendingReply = { t: rand(0.9, 1.6), text: aiAnswer(text) };
+  },
+};
+
+// Typing fallback: Enter says it, Esc cancels. Keys typed here never reach the game.
+talkInput.addEventListener('keydown', e => {
+  e.stopPropagation();
+  if (e.key === 'Enter') {
+    const text = talkInput.value.trim();
+    TrashTalk.closeTyping();
+    if (text) TrashTalk.said(TrashTalk.speaker, text);
+  } else if (e.key === 'Escape') {
+    TrashTalk.closeTyping();
+  }
+});
+talkInput.addEventListener('keyup', e => e.stopPropagation());
+
+/* ---------- Battlecries ---------- */
+
+/** Cuts silence off both ends of a recording. */
+function trimSilence(ac, buf) {
+  const data = buf.getChannelData(0);
+  let peak = 0;
+  for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i]));
+  const threshold = Math.max(0.01, peak * 0.08);
+  let start = 0, end = data.length - 1;
+  while (start < end && Math.abs(data[start]) < threshold) start++;
+  while (end > start && Math.abs(data[end]) < threshold) end--;
+  start = Math.max(0, start - Math.floor(0.03 * buf.sampleRate));
+  end = Math.min(data.length, end + Math.floor(0.12 * buf.sampleRate));
+  if (end - start < buf.sampleRate * 0.05) return buf;      // (almost) nothing recorded: keep as is
+  const out = ac.createBuffer(buf.numberOfChannels, end - start, buf.sampleRate);
+  for (let c = 0; c < buf.numberOfChannels; c++) out.copyToChannel(buf.getChannelData(c).subarray(start, end), c);
+  return out;
+}
+
+const Battlecry = {
+  buffers: [null, null],   // recorded battlecry per player (Red, Blue)
+  recording: null,         // { rec, index, name, startedAt } while recording
+  MAX_SECONDS: 3,
+
+  supported() {
+    return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+  },
+
+  /** B pressed: start recording for this player, or stop the current recording. */
+  async toggle(p) {
+    if (this.recording) { this.stop(); return; }
+    if (TrashTalk.rec || TrashTalk.isTyping() || this.starting) return;
+    if (!this.supported()) { showToast('Recording a battlecry is not supported in this browser'); return; }
+    Sound.unlock();
+    if (!Sound.ac) { showToast('Sound is not available in this browser'); return; }
+    this.starting = true;
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      this.starting = false;
+      showToast('No microphone access: battlecry not recorded');
+      return;
+    }
+    this.starting = false;
+    const chunks = [];
+    const rec = new MediaRecorder(stream);
+    const index = p.index, name = p.name;
+    rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      this.recording = null;
+      try {
+        const bytes = await new Blob(chunks, { type: rec.mimeType }).arrayBuffer();
+        this.buffers[index] = trimSilence(Sound.ac, await Sound.ac.decodeAudioData(bytes));
+        showToast(`${name}'s battlecry saved! It plays every time ${name} shoots.`);
+        this.play(index);
+      } catch (err) {
+        showToast('Could not use that recording. Press B to try again.');
+      }
+    };
+    rec.start();
+    this.recording = { rec, index, name, startedAt: performance.now() };
+    this.timer = setTimeout(() => this.stop(), this.MAX_SECONDS * 1000);
+  },
+
+  stop() {
+    clearTimeout(this.timer);
+    if (this.recording && this.recording.rec.state === 'recording') this.recording.rec.stop();
+  },
+
+  play(index) {
+    if (this.buffers[index]) Sound.playBuffer(this.buffers[index]);
+  },
+};
+
+/** Who presses B records for: the human against the computer, otherwise the player whose turn it is. */
+const battlecryOwner = () => (gameMode.ai ? players[0] : active());
+
+/* ---------- Voice shooting: say "shoot" to fire ---------- */
+const SHOOT_WORDS = /\b(shoot|shoots|shot|fire|skjut|skjuter|skjut nu)\b/i;
+
+const VoiceShoot = {
+  enabled: true,
+  blocked: false,     // the microphone or speech service can't be used
+  rec: null,
+  lastStart: -99,
+
+  /** Listen only while a human is aiming and the mic isn't busy with something else. */
+  wanted() {
+    return this.enabled && !this.blocked && !!TrashTalk.SR && state === 'aim' && !isAI(active())
+      && !TrashTalk.rec && !TrashTalk.isTyping() && !Battlecry.recording && !Battlecry.starting;
+  },
+
+  /** Called every frame: starts or stops listening as needed. */
+  update() {
+    const want = this.wanted();
+    if (want && !this.rec && time - this.lastStart > 1) this.start();
+    else if (!want && this.rec) this.stop();
+  },
+
+  start() {
+    const rec = new TrashTalk.SR();
+    rec.lang = navigator.language || 'en-US';
+    rec.continuous = true;
+    rec.interimResults = true;        // react as soon as the word is heard
+    rec.onresult = e => {
+      for (let i = e.resultIndex; i < e.results.length; i++) this.heard(e.results[i][0].transcript);
+    };
+    rec.onerror = e => {
+      if (['not-allowed', 'service-not-allowed', 'audio-capture', 'network', 'language-not-supported'].includes(e.error)) {
+        this.blocked = true;
+        showToast('Voice shooting is unavailable here: use Space to shoot');
+      }
+    };
+    rec.onend = () => { if (this.rec === rec) this.rec = null; };
+    this.lastStart = time;
+    try {
+      rec.start();
+      this.rec = rec;
+    } catch (err) {
+      this.blocked = true;
+    }
+  },
+
+  stop() {
+    if (!this.rec) return;
+    const rec = this.rec;
+    this.rec = null;
+    try { rec.abort(); } catch (err) { /* already stopped */ }
+  },
+
+  /** Some speech was recognised: fire if it contains "shoot". */
+  heard(transcript) {
+    if (SHOOT_WORDS.test(transcript) && state === 'aim' && !isAI(active())) {
+      this.stop();
+      shoot();
+    }
+  },
+
+  toggle() {
+    this.enabled = !this.enabled;
+    if (!this.enabled) this.stop();
+    showToast(this.enabled ? 'Voice shooting on: say "shoot" while aiming' : 'Voice shooting off');
+  },
+
+  /** True when "say shoot" can be offered right now. */
+  available() { return this.enabled && !this.blocked && !!TrashTalk.SR; },
+};
+
+/* ---------- Drawing ---------- */
+
+/** Splits text into lines that fit maxWidth (at most 4 lines). */
+function wrapText(text, maxWidth) {
+  const words = text.split(/\s+/);
+  const lines = [];
+  let line = '';
+  for (const w of words) {
+    const test = line ? `${line} ${w}` : w;
+    if (ctx.measureText(test).width > maxWidth && line) { lines.push(line); line = w; }
+    else line = test;
+  }
+  if (line) lines.push(line);
+  if (lines.length > 4) { lines.length = 4; lines[3] += '…'; }
+  return lines;
+}
+
+/** Speech bubbles above the squirrels' heads. */
+function drawBubbles() {
+  for (const p of players) {
+    const b = bubbles[p.index];
+    if (!b || p.carried) continue;
+    ctx.save();
+    ctx.globalAlpha = b.listening ? 1 : clamp((b.dur - b.t) / 0.4, 0, 1) * clamp(b.t / 0.12, 0, 1);
+    ctx.font = b.listening ? 'italic 15px system-ui, sans-serif' : 'bold 15px system-ui, sans-serif';
+    const lines = wrapText(b.text, 240);
+    const lineH = 19;
+    const w = Math.max(...lines.map(l => ctx.measureText(l).width)) + 26;
+    const h = lines.length * lineH + 16;
+    const tipX = p.x, tipY = Math.min(p.y, H - 60) - p.height - 8;
+    const bx = clamp(p.x - w / 2, 10, W - w - 10);
+    const by = clamp(tipY - 16 - h, 160, H - h - 100);
+
+    // Bubble with a little tail pointing at the squirrel
+    const tailX = clamp(tipX, bx + 18, bx + w - 18);
+    ctx.fillStyle = b.listening ? '#eef6ff' : '#ffffff';
+    ctx.strokeStyle = p.color;
+    ctx.lineWidth = 3;
+    roundRectPath(ctx, bx, by, w, h, 12);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(tailX - 9, by + h - 1.5);
+    ctx.lineTo(tipX, Math.max(tipY, by + h + 6));
+    ctx.lineTo(tailX + 9, by + h - 1.5);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillRect(tailX - 7.5, by + h - 4, 15, 4);           // hide the border under the tail
+
+    ctx.fillStyle = b.listening ? '#56607a' : '#1d1630';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    lines.forEach((l, i) => ctx.fillText(l, bx + w / 2, by + 8 + lineH * (i + 0.5)));
+    ctx.restore();
+  }
+}
+
+/** Status message (and the recording indicator) above the bottom panel. */
+function drawToast() {
+  let text = null, rec = false;
+  if (Battlecry.recording) {
+    const secs = (performance.now() - Battlecry.recording.startedAt) / 1000;
+    text = `REC  ${Battlecry.recording.name}'s battlecry  ${secs.toFixed(1)} / ${Battlecry.MAX_SECONDS} s   (B to stop)`;
+    rec = true;
+  } else if (toast) {
+    text = toast.text;
+  }
+  if (!text) return;
+  ctx.font = 'bold 15px system-ui, sans-serif';
+  const w = ctx.measureText(text).width + (rec ? 52 : 32);
+  const x = W / 2 - w / 2, y = H - 118;
+  ctx.globalAlpha = rec ? 1 : clamp((3.5 - toast.t) / 0.4, 0, 1);
+  panel(x, y, w, 32);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#fff';
+  ctx.fillText(text, W / 2 + (rec ? 10 : 0), y + 17);
+  if (rec && Math.floor(time * 3) % 2 === 0) {
+    ctx.fillStyle = '#ff3b3b';
+    ctx.beginPath();
+    ctx.arc(x + 20, y + 16, 6, 0, TAU);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** Advances bubbles, the pending AI answer and the toast. */
+function updateTalk(dt) {
+  for (let i = 0; i < 2; i++) {
+    const b = bubbles[i];
+    if (!b) continue;
+    b.t += dt;
+    if (!b.listening && b.t > b.dur) bubbles[i] = null;
+  }
+  if (pendingReply) {
+    pendingReply.t -= dt;
+    if (pendingReply.t <= 0) {
+      if (players[1]) say(players[1], pendingReply.text);
+      pendingReply = null;
+    }
+  }
+  if (toast) { toast.t += dt; if (toast.t > 3.5) toast = null; }
 }
 
 /* ======================================================================
@@ -1789,6 +2382,17 @@ function update(dt) {
   time += dt;
   if (!puck && Sound.flight) Sound.stopFlight();     // the puck's flight ended (hit, splash, reset...)
   updateEffects(dt);
+  updateTalk(dt);
+  VoiceShoot.update();
+
+  // The computer heckles while a human is moving and aiming
+  if (gameMode.ai && (state === 'move' || state === 'aim') && players.length && !isAI(active())) {
+    ai.chatTimer -= dt;
+    if (ai.chatTimer <= 0) {
+      ai.chatTimer = rand(7, 12);
+      aiTaunt('waiting', 0.8);
+    }
+  }
 
   if (state !== 'title') {
     updatePoops(dt);
@@ -2413,7 +3017,14 @@ function drawHUD() {
       ctx.fillText('The computer is aiming…', bx + 236, by + 31);
     } else {
       ctx.fillText('↑ / ↓ angle   ← / → power', bx + 236, by + 20);
-      ctx.fillText('Space: SHOOT', bx + 236, by + 42);
+      const shootHint = VoiceShoot.available() ? 'Space or say "shoot"' : 'Space: SHOOT';
+      ctx.fillText(shootHint, bx + 236, by + 42);
+      if (VoiceShoot.rec && Math.floor(time * 2) % 2 === 0) {      // blinking "listening" dot
+        ctx.fillStyle = '#ff5a5a';
+        ctx.beginPath();
+        ctx.arc(bx + 236 + ctx.measureText(shootHint).width + 12, by + 42, 4, 0, TAU);
+        ctx.fill();
+      }
     }
   }
 
@@ -2475,7 +3086,7 @@ function drawTitle() {
 
   const lines = [
     ['Move phase', '← / → walk along the island, Enter to finish moving'],
-    ['Aim phase', '↑ / ↓ change angle, ← / → change power, Space to shoot'],
+    ['Aim phase', '↑ / ↓ change angle, ← / → change power, Space (or say "shoot") to shoot'],
     ['Win by', 'reducing the other squirrel to 0 HP or knocking them into the water'],
     ['Never', 'hit the red button with a puck, or click it. You lose instantly.'],
     [`Round ${CONFIG.BOSS_AFTER_ROUNDS + 1}`, 'a final boss bombs the islands with explosive poop. Lose your whole island and you lose!'],
@@ -2509,7 +3120,12 @@ function drawTitle() {
 
   ctx.font = '16px system-ui, sans-serif';
   ctx.fillStyle = `rgba(255,255,255,${0.6 + 0.4 * Math.sin(time * 4)})`;
-  ctx.fillText('↑ / ↓ choose a mode, ENTER or click to start   ·   vs Computer: you play Red', W / 2, 668);
+  ctx.fillText('↑ / ↓ choose a mode, ENTER or click to start   ·   vs Computer: you play Red', W / 2, 660);
+
+  // How to record a battlecry
+  ctx.font = '14px system-ui, sans-serif';
+  ctx.fillStyle = '#ffd23b';
+  ctx.fillText('Your own battlecry: press B, shout into the mic (up to 3 s), press B again. It plays every time you shoot.', W / 2, 686);
 }
 
 /** Rectangle of the i-th game mode button on the title screen. */
@@ -2594,12 +3210,15 @@ function render() {
 
   if (state === 'title') {
     drawTitle();
-    drawSoundIndicator();
+    drawToast();
+    drawSoundIndicator(true);
     return;
   }
   drawHUD();
+  drawBubbles();
+  drawToast();
   if (state === 'button') drawButtonAlarm();
-  if (state === 'gameover') drawGameOver();
+  if (state === 'gameover') { drawGameOver(); drawBubbles(); }
   drawSoundIndicator();
 }
 
@@ -2613,6 +3232,15 @@ window.addEventListener('keydown', e => {
   keys[e.code] = true;
   Sound.unlock();
   if (e.code === 'KeyM' && !e.repeat) Sound.toggleMute();
+  if (e.code === 'KeyV' && !e.repeat) VoiceShoot.toggle();
+  if (!e.repeat && players.length) {
+    if (e.code === 'KeyB') Battlecry.toggle(battlecryOwner());
+    if (state !== 'title') {
+      // preventDefault keeps the letter out of the typing box that may open
+      if (e.code === 'KeyT') { e.preventDefault(); TrashTalk.toggle(players[0]); }
+      if (e.code === 'KeyY' && !gameMode.ai) { e.preventDefault(); TrashTalk.toggle(players[1]); }
+    }
+  }
 
   // Title screen: choose a game mode
   if (state === 'title') {

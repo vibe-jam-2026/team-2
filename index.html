@@ -16,7 +16,8 @@
   links there (href) and is left out of the survival score and "Play all games".
   GAME 4 (Ice Brawl Pro) is a harder, skill-based remix of Ice Brawl: class IceBrawlPro extends IceBrawl.
   GAME 5 (Ice Brawl: Face-Off) is first person with two hands. Games may optionally take their own input
-  (keyDown/keyUp/pointerDown/pointerUp/releaseAll) and add bonus seconds to their score (.bonus).
+  (keyDown/keyUp/pointerDown/pointerUp/releaseAll). A game marked winOnly has no timer or score: it is won or lost
+  (set .won), and it is left out of the overall score and "Play all".
   To add a framework game instead: write a class with the same shape as JetEscape / IceBrawl
   (reset, start, action, update, draw, plus .time and .state) and add it to the GAMES list.
 -->
@@ -2394,7 +2395,7 @@ const FP = {
   PUNCH_HIT: 0.1, PUNCH_LEN: 0.26, PUNCH_RECOVER: 0.12, PUNCH_COST: 18,
   STAM_REGEN: 20, BLOCK_DRAIN: 7,
   PERFECT: 0.12, GOOD: 0.4, WEAK: 1.2,     // how long a block has been held: perfect → good → weak → guard break
-  HP: 150, REGEN: 0.6, KO_BONUS: 10,
+  HP: 150, REGEN: 0.6,
   DMG: { hit: 7, glance: 4, counter: 13, stuff: 10 },
   ATK: {
     jab:   { wind: [0.62, 0.42], depth: 0.6,  dmg: 8,  color: '#ffd166', name: 'JAB!' },
@@ -2434,7 +2435,7 @@ class IceBrawlFP extends IceBrawl {
   get diff() { const p = this.e.p; return clamp(p.diff + this.e.ft / 60 * p.ramp, 0, 1); }
   reset() {
     super.reset();
-    this.balance = FP.HP; this.bonus = 0; this.round = 1; this.kos = 0; this.combo = 0; this.touch = !!this.touch; this.stamina = 100; this.slow = 0; this.flash = 0; this.fall = 0;
+    this.balance = FP.HP; this.round = 1; this.kos = 0; this.combo = 0; this.touch = !!this.touch; this.stamina = 100; this.slow = 0; this.flash = 0; this.fall = 0;
     this.hands = {}; this.held = {};
     for (const s of SIDES) { this.hands[s] = { st: 'rest', t: 0, bt: 0, stunT: 0, resolved: false, pos: null }; this.held[s] = new Set(); }
     this.pointers = new Map(); this.usage = { L: 0, R: 0 }; this.lastPunches = [];
@@ -2532,10 +2533,9 @@ class IceBrawlFP extends IceBrawl {
   koRival() {
     const E = this.e, { W, H } = this.v;
     E.hp = 0; E.mode = 'ko'; E.modeT = 2.6; E.combo = 0;
-    this.kos++; this.bonus += FP.KO_BONUS; this.balance = FP.HP;   // full health for the next opponent
+    this.kos++; this.balance = FP.HP;   // full health for the next opponent
     this.cheer = 1; this.shake = 1;
     addText(this.texts, 'KNOCKOUT!', W / 2, H * 0.3, '#ffcf4a', 48);
-    addText(this.texts, `+${FP.KO_BONUS}s`, W / 2, H * 0.42, '#7dffb0', 30);
   }
 
   /* ---------- the rival ---------- */
@@ -2595,15 +2595,15 @@ class IceBrawlFP extends IceBrawl {
   win() {
     const { W, H } = this.v;
     this.state = 'winning'; this.endT = 3.5; this.cheer = 1; this.won = true; this.releaseAll();
-    this.bonus = Math.max(this.bonus, Math.ceil(60 - this.time));          // beating everyone is a perfect score
     this.overTitle = 'Champion of the ice!';
-    this.overText = `You knocked out your rival, Trump and Kim Jong Un in <b>${this.time.toFixed(1)} seconds</b>.`;
+    this.overText = 'You knocked out your rival, Trump and Kim Jong Un. You win!';
     addText(this.texts, 'CHAMPION!', W / 2, H * 0.3, '#ffcf4a', 56); this.texts[this.texts.length - 1].life = this.texts[this.texts.length - 1].max = 3;
   }
   hurt(d) {
     this.balance -= d;
     if (this.balance <= 0.5 && this.state === 'running') {
       const { W, H } = this.v;
+      this.overText = `${this.e.p.name || 'Your rival'} knocked you out. Knock out all ${ROSTER.length} opponents to win.`;
       this.balance = 0; this.state = 'dying'; this.endT = 2.6; this.e.mode = 'celebrate'; this.cheer = 1; this.releaseAll();
       addText(this.texts, 'DOWN!', W / 2, H * 0.34, '#ffffff', 46);
     }
@@ -3057,8 +3057,8 @@ const GAMES = [
     id: 'brawlfp', name: 'Ice Brawl: Face-Off', icon: '👊', overTitle: 'Down on the ice!', meterLabel: 'Balance',
     art: 'radial-gradient(circle at 50% 38%,#e63946 0 22%,transparent 23%),linear-gradient(180deg,#1b2440 0%,#2a3456 55%,#dcefff 55%,#f4faff 100%)',
     desc: 'First-person hockey fight. Punch and block with each hand, knock out your rival, then Trump and Kim Jong Un.',
-    howTo: '<b>Q</b>/<b>E</b> punch, hold <b>A</b>/<b>D</b> to block (touch: top half punches, bottom half blocks). Block the side the punch comes from just before it lands for a <b>PERFECT</b> and a free counter. Long blocks get weak. Beat your rival, then the final boss and the final final boss. Each knockout adds <b>+10s</b>.',
-    targetTime: 60,
+    howTo: '<b>Q</b>/<b>E</b> punch, hold <b>A</b>/<b>D</b> to block (touch: top half punches, bottom half blocks). Block the side the punch comes from just before it lands for a <b>PERFECT</b> and a free counter. Long blocks get weak. Beat your rival, then the final boss and the final final boss.',
+    winOnly: true, goal: 'Knock out your rival, Trump and Kim Jong Un to win. No timer, no score.',   // win or lose, no survival score
     theme: { hudBg: 'rgba(14,22,44,.62)', hudInk: '#eaf4ff', panelBg: 'linear-gradient(165deg,#ffffff,#dcecf8)', panelInk: '#13223f', panelEdge: '#2f6fe0', accent: '#2f6fe0', accentInk: '#ffffff' },
     create: v => new IceBrawlFP(v)
   },
@@ -3069,7 +3069,7 @@ const GAMES = [
     desc: 'A simple platformer: run, jump, stomp enemies and beat a boss at the end of each of the three levels.'
   }
 ];
-const available = () => GAMES.filter(g => !g.locked && !g.href);   // games that use the shared survival framework
+const available = () => GAMES.filter(g => !g.locked && !g.href && !g.winOnly);   // survival games: counted in the overall score and "Play all"
 
 /* =====================================================================
    FRAMEWORK — hub, shared HUD, overlays, input, scoring
@@ -3080,6 +3080,7 @@ const hubEl = $('hub'), resultsEl = $('results'), overlay = $('overlay'), panel 
 const timerEl = $('timer'), meterEl = $('meter'), meterFill = $('meterFill'), meterLabel = $('meterLabel');
 const view = { W: 640, H: 480 };
 const best = {};                         // best score per game, kept for this session only
+const wins = {};                         // win-or-lose games (winOnly) that have been won this session
 let mode = 'hub', phase = '', cur = null, curDef = null, paused = false, playAll = null, overlayAt = 0;
 
 function resize() {
@@ -3093,7 +3094,6 @@ window.addEventListener('resize', resize); resize();
 
 const show = el => el.classList.remove('off');
 const hide = el => el.classList.add('off');
-const runTime = g => g.time + (g.bonus || 0);   // a game may add bonus seconds (Face-Off: knockouts)
 const scoreFor = (def, time) => Math.min(100, Math.round(time / def.targetTime * 100));
 const overallScore = () => { const g = available(); return Math.round(g.reduce((a, d) => a + (best[d.id] || 0), 0) / g.length); };
 const message = s => s >= 90 ? 'Legendary!' : s >= 70 ? 'Impressive!' : s >= 40 ? 'Nice work!' : 'Good start!';
@@ -3120,6 +3120,7 @@ function renderHub() {
     b.innerHTML = `<div class="art">${g.icon}</div><div class="body"><span class="num">Game ${i + 1}</span><h3>${g.name}</h3><p>${g.desc}</p>` +
       (g.href ? `<div class="best"><span>${g.tag || '2 players · Opens the game'}</span></div>` :
        g.locked ? `<div class="best">Locked</div>` :
+       g.winOnly ? `<div class="best"><span>${wins[g.id] ? '🏆 Champion' : 'Not beaten yet'}</span></div>` :
         `<div class="best"><span>Best</span><div class="bar"><i style="width:${sc}%"></i></div><span>${sc}/100</span></div>`) + `</div>`;
     if (g.locked) b.setAttribute('aria-disabled', 'true');
     else if (g.href) b.addEventListener('click', () => { window.location.href = g.href; });
@@ -3139,6 +3140,7 @@ function startGame(def) {
     curDef = def; cur = def.create(view); applyTheme(def.theme);
     mode = 'game'; paused = false;
     hide(hubEl); hide(resultsEl); show(hud);
+    if (def.winOnly) hide(timerEl); else show(timerEl);
     if (def.meterLabel) { meterLabel.textContent = def.meterLabel; show(meterEl); } else hide(meterEl);
     showIntro();
   });
@@ -3148,17 +3150,24 @@ function openOverlay(html) { panel.innerHTML = html; show(overlay); overlayAt = 
 function showIntro() {
   phase = 'intro';
   openOverlay(`${tag()}<h2>${curDef.icon} ${curDef.name}</h2><p class="howto">${curDef.howTo}</p>` +
-    `<p class="target">Survive ${curDef.targetTime} seconds for a perfect 100.</p>${hint('to play')}`);
+    `<p class="target">${curDef.winOnly ? curDef.goal : `Survive ${curDef.targetTime} seconds for a perfect 100.`}</p>${hint('to play')}`);
 }
 function showGameOver() {
   phase = 'over';
-  const time = runTime(cur), sc = scoreFor(curDef, time), prev = best[curDef.id];
+  if (curDef.winOnly) {                                // win or lose: no score
+    if (cur.won) wins[curDef.id] = true;
+    openOverlay(`<h2>${cur.overTitle || curDef.overTitle}</h2><p class="howto">${cur.overText || ''}</p>` +
+      `<div class="score">${cur.won ? '🏆' : '🥊'}</div><p class="target">${cur.won ? 'Champion!' : wins[curDef.id] ? 'You have beaten it before.' : 'Not beaten yet.'}</p>` +
+      `${hint(cur.won ? 'to fight again' : 'to try again')}<div class="row"><button class="link-btn" data-act="hub">Back to hub</button></div>`);
+    return;
+  }
+  const time = cur.time, sc = scoreFor(curDef, time), prev = best[curDef.id];
   const isBest = prev === undefined || sc > prev;
   best[curDef.id] = Math.max(prev || 0, sc);
   if (playAll) playAll.results.push({ def: curDef, time, score: sc });
   const last = playAll && playAll.idx === playAll.queue.length - 1;
   const next = playAll ? (last ? 'to see your results' : 'for the next game') : 'to play again';
-  openOverlay(`${tag()}<h2>${cur.overTitle || curDef.overTitle}</h2><p class="howto">${cur.overText || `You survived <b>${cur.time.toFixed(1)} seconds</b>${cur.bonus ? ` + <b>${cur.bonus}s</b> knockout bonus` : ''}.`}</p>` + (cur.overNote ? `<p class="target">${cur.overNote}</p>` : '') +
+  openOverlay(`${tag()}<h2>${cur.overTitle || curDef.overTitle}</h2><p class="howto">${cur.overText || `You survived <b>${cur.time.toFixed(1)} seconds</b>.`}</p>` + (cur.overNote ? `<p class="target">${cur.overNote}</p>` : '') +
     `<div class="score">${sc}<span>/100</span></div><p class="target">${isBest && sc > 0 ? 'New best score!' : `Your best: ${best[curDef.id]}/100`}</p>` +
     `${hint(next)}<div class="row"><button class="link-btn" data-act="hub">Back to hub</button></div>`);
 }
@@ -3256,7 +3265,7 @@ function frame(now) {
   if (mode === 'game' && cur) {
     if (!paused) cur.update(dt);
     cur.draw(ctx);
-    timerEl.textContent = runTime(cur).toFixed(1) + 's';
+    timerEl.textContent = cur.time.toFixed(1) + 's';
     if (curDef.meterLabel && cur.meter !== undefined) {
       const m = clamp(cur.meter, 0, 1);
       meterFill.style.width = (m * 100) + '%';
