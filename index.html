@@ -2398,10 +2398,12 @@ class IceBrawlPro extends IceBrawl {
    ===================================================================== */
 const FP = {
   PUNCH_HIT: 0.1, PUNCH_LEN: 0.26, PUNCH_RECOVER: 0.12, PUNCH_COST: 18,
+  FAKE_LEN: 0.2, FAKE_COST: 6, BAIT: 0.5,     // a fake punch, and how long a bitten fake leaves the other side open
+  SCREAM: 0.15, SCREAM_HOLD: 0.08, STUN: 0.5, BLOCK_WINDOW: 0.6,   // mic loudness (RMS) that counts as a scream; a scream stuns a rival that just blocked
   STAM_REGEN: 20, BLOCK_DRAIN: 7,
   PERFECT: 0.12, GOOD: 0.4, WEAK: 1.2,     // how long a block has been held: perfect → good → weak → guard break
   HP: 150, REGEN: 0.6,
-  DMG: { hit: 7, glance: 4, counter: 13, stuff: 10 },
+  DMG: { hit: 7, glance: 4, counter: 13, stuff: 10, fakeout: 16 },
   ATK: {
     jab:   { wind: [0.62, 0.42], depth: 0.6,  dmg: 8,  color: '#ffd166', name: 'JAB!' },
     hook:  { wind: [1.0, 0.7],   depth: 1,    dmg: 17, color: '#ff3b3b', name: 'HOOK!' },
@@ -2419,16 +2421,37 @@ const RIVALS = [
    hp: health · diff/ramp: starting difficulty and how fast it climbs during the fight
    react: chance to block a punch to its open side · dmg: damage multiplier · speed: wind-up time multiplier
    hook: share of hooks vs jabs · feint/combo: how often it fakes or chains · parry: chance to parry a punch into its guard
-   smart: how much it guards the hand you favour */
+   smart: how much it guards the hand you favour · bite: chance it falls for your fake punches */
 const ROSTER = [
-  { kind: 'skater', label: 'RIVAL', hp: 90, diff: 0, ramp: 0.25, react: 0.22, dmg: 0.75, speed: 1.1, hook: 0.5, feint: 0.6, combo: 0.5, parry: 0.12, smart: 0.2, col: 0 },
-  { kind: 'trump', label: 'FINAL BOSS', name: 'TRUMP', hp: 170, diff: 0.3, ramp: 0.5, react: 0.45, dmg: 1.3, speed: 1.1, hook: 0.7, feint: 1, combo: 0.9, parry: 0.18, smart: 0.4,
+  { kind: 'skater', label: 'RIVAL', hp: 90, diff: 0, ramp: 0.25, react: 0.22, dmg: 0.75, speed: 1.1, hook: 0.5, feint: 0.6, combo: 0.5, parry: 0.12, smart: 0.2, bite: 0.9, col: 0 },
+  { kind: 'trump', label: 'FINAL BOSS', name: 'TRUMP', hp: 170, diff: 0.3, ramp: 0.5, react: 0.45, dmg: 1.3, speed: 1.1, hook: 0.7, feint: 1, combo: 0.9, parry: 0.18, smart: 0.4, bite: 0.7,
     col: { jersey: '#1f2a44', stripe: '#ffffff', helmet: '#1f2a44', skin: '#f2a65a' } },
-  { kind: 'kim', label: 'FINAL FINAL BOSS', name: 'KIM JONG UN', hp: 250, diff: 0.55, ramp: 0.6, react: 0.6, dmg: 1.5, speed: 0.85, hook: 0.35, feint: 1.5, combo: 1.8, parry: 0.28, smart: 0.6,
+  { kind: 'kim', label: 'FINAL FINAL BOSS', name: 'KIM JONG UN', hp: 250, diff: 0.55, ramp: 0.6, react: 0.6, dmg: 1.5, speed: 0.85, hook: 0.35, feint: 1.5, combo: 1.8, parry: 0.28, smart: 0.6, bite: 0.5,
     col: { jersey: '#2b2d33', stripe: '#2b2d33', helmet: '#16161c', skin: '#f1d2b4' } }
 ];
 const TRUMP_LINES = ['SAD!', "YOU'RE FIRED!", 'TREMENDOUS!', 'HUGE!'];
-const FP_KEYS = { KeyQ: ['punch', 'L'], KeyE: ['punch', 'R'], KeyA: ['block', 'L'], KeyD: ['block', 'R'] };
+const FP_KEYS = { KeyQ: ['punch', 'L'], KeyE: ['punch', 'R'], KeyA: ['block', 'L'], KeyD: ['block', 'R'], KeyZ: ['fake', 'L'], KeyC: ['fake', 'R'] };
+/* Microphone for screaming. Asked for once, when a Face-Off fight starts. Only the loudness is measured,
+   right here in the browser: nothing is recorded or sent anywhere. Without a mic the game still works. */
+const FP_MIC = { state: 'off', ctx: null, an: null, buf: null };
+function fpMicStart() {
+  if (FP_MIC.state !== 'off') return;
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !(window.AudioContext || window.webkitAudioContext)) { FP_MIC.state = 'none'; return; }
+  FP_MIC.state = 'asking';
+  try { FP_MIC.ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { FP_MIC.state = 'none'; return; }
+  navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }).then(stream => {
+    const an = FP_MIC.ctx.createAnalyser(); an.fftSize = 1024;
+    FP_MIC.ctx.createMediaStreamSource(stream).connect(an);
+    FP_MIC.an = an; FP_MIC.buf = new Float32Array(an.fftSize); FP_MIC.state = 'on';
+    if (FP_MIC.ctx.state === 'suspended') FP_MIC.ctx.resume();
+  }).catch(() => { FP_MIC.state = 'denied'; });
+}
+function fpMicLevel() {                                // loudness right now, as RMS (0 = silent, ~0.3+ = screaming)
+  if (FP_MIC.state !== 'on') return 0;
+  FP_MIC.an.getFloatTimeDomainData(FP_MIC.buf);
+  let sum = 0; for (let i = 0; i < FP_MIC.buf.length; i++) sum += FP_MIC.buf[i] * FP_MIC.buf[i];
+  return Math.sqrt(sum / FP_MIC.buf.length);
+}
 const SIDES = ['L', 'R'], sgn = s => s === 'L' ? -1 : 1, otherSide = s => s === 'L' ? 'R' : 'L';
 const P_LERP = (a, b, t) => ({ x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), s: lerp(a.s, b.s, t) });
 
@@ -2444,13 +2467,16 @@ class IceBrawlFP extends IceBrawl {
     this.hands = {}; this.held = {};
     for (const s of SIDES) { this.hands[s] = { st: 'rest', t: 0, bt: 0, stunT: 0, resolved: false, pos: null }; this.held[s] = new Set(); }
     this.pointers = new Map(); this.usage = { L: 0, R: 0 }; this.lastPunches = [];
+    this.mic = 0; this.loudT = 0; this.loudAt = -9; this.screamCD = 0; this.hatFly = null;
     this.e = this.newRival();
   }
+  start() { super.start(); fpMicStart(); }
   newRival() {
     const p = ROSTER[this.round - 1];
     const col = typeof p.col === 'number' ? Object.assign({}, RIVALS[p.col], { skin: SKINS[(Math.random() * SKINS.length) | 0] }) : p.col;
     return { p, kind: p.kind, ft: 0, guardSince: -1, guardTo: null, guardDelay: 0, lastHit: null, mode: 'guard', modeT: 0, gapT: 1.3, guard: Math.random() < 0.5 ? 'L' : 'R', guardT: rand(0.8, 1.6),
       hp: p.hp, maxHp: p.hp, atk: null, combo: 0, punish: null, flinch: 0, flinchDir: 1, drop: 0,
+      blockT: 0, blockAt: -9, baited: null, hat: p.kind === 'trump' ? 'on' : null,
       col,
       fist: { L: null, R: null } };
   }
@@ -2465,13 +2491,14 @@ class IceBrawlFP extends IceBrawl {
   keyUp(code) { const m = FP_KEYS[code]; if (m && m[0] === 'block') this.release(m[1], code); }
   pointerDown(id, x, y, touch) {
     if (touch) this.touch = true;
-    const m = [y < this.v.H * 0.6 ? 'punch' : 'block', x < this.v.W / 2 ? 'L' : 'R'];
+    const m = [y < this.v.H * 0.32 ? 'fake' : y < this.v.H * 0.6 ? 'punch' : 'block', x < this.v.W / 2 ? 'L' : 'R'];
     this.pointers.set(id, m); this.press(m[0], m[1], 'p' + id);
   }
   pointerUp(id) { const m = this.pointers.get(id); if (!m) return; this.pointers.delete(id); if (m[0] === 'block') this.release(m[1], 'p' + id); }
   releaseAll() { for (const s of SIDES) { this.held[s].clear(); this.syncBlock(s); } this.pointers.clear(); }
   press(act, side, src) {
     if (act === 'block') { this.held[side].add(src); this.syncBlock(side); }
+    else if (act === 'fake') this.fake(side);
     else this.punch(side);
   }
   release(side, src) { this.held[side].delete(src); this.syncBlock(side); }
@@ -2489,6 +2516,21 @@ class IceBrawlFP extends IceBrawl {
     if (this.stamina < FP.PUNCH_COST) { addText(this.texts, 'TIRED!', this.v.W / 2 + sgn(s) * 150 * this.k, this.v.H * 0.72, '#9fe0ff', 22); return; }
     this.stamina -= FP.PUNCH_COST; h.st = 'punch'; h.t = 0; h.resolved = false;
     this.usage[s] += 1; this.lastPunches.push(s); if (this.lastPunches.length > 4) this.lastPunches.shift();
+  }
+  fake(s) {
+    if (this.state !== 'running') return;
+    const h = this.hands[s];
+    if (h.st !== 'rest' || this.stamina < FP.FAKE_COST) return;
+    this.stamina -= FP.FAKE_COST; h.st = 'fake'; h.t = 0; h.resolved = false;
+  }
+  landFake(s) {
+    const E = this.e, L = this.layout();
+    if (E.mode !== 'guard') return;                    // only a guarding rival can be fooled
+    if (Math.random() > E.p.bite) { addText(this.texts, 'NOT FOOLED', L.cx + sgn(s) * 60 * L.k, L.head - 30 * L.k, '#c9d3de', 22); return; }
+    // it bites: it blocks the fake, which pulls its guard over and leaves the other side open
+    E.guardTo = null; this.setGuard(s); E.guardT = Math.max(E.guardT, 0.9); E.gapT = Math.max(E.gapT, 0.7);
+    E.baited = { side: s, t: FP.BAIT }; E.blockT = FP.BLOCK_WINDOW; E.blockAt = this.t;
+    addText(this.texts, 'FAKE!', L.cx + sgn(s) * 60 * L.k, L.head - 30 * L.k, '#ff9de0', 26);
   }
   landPunch(s) {
     const E = this.e;
@@ -2509,7 +2551,10 @@ class IceBrawlFP extends IceBrawl {
     // guarding: only a guard that is up and settled blocks; the open side always gets hit
     const spam = this.lastPunches.length >= 3 && this.lastPunches.slice(-3).every(x => x === s);
     if (s === E.guard && this.t - E.guardSince > 0.15) return this.blocked(s, spam || Math.random() < E.p.parry);
-    this.hitRival(FP.DMG.hit, s, 'POW!', '#ffcf4a');
+    const fakeout = E.baited && E.baited.t > 0 && s !== E.baited.side;   // the other hand, right after a fake it blocked
+    E.baited = null;
+    if (fakeout) this.hitRival(FP.DMG.fakeout, s, 'FAKE-OUT!', '#ff9de0');
+    else this.hitRival(FP.DMG.hit, s, 'POW!', '#ffcf4a');
     // it learns: after a visible delay it may move its guard to where you just hit it
     const habit = this.usage[s] / (this.usage.L + this.usage.R + 1);
     if (Math.random() < clamp(E.p.react + 0.15 * this.diff + habit * 0.25, 0, 0.85)) { E.guardTo = s; E.guardDelay = rand(0.15, 0.3); }
@@ -2520,11 +2565,17 @@ class IceBrawlFP extends IceBrawl {
     if (E.kind === 'trump' && Math.random() < 0.15 && E.hp > 0) addText(this.texts, 'FAKE NEWS!', L.cx - sgn(s) * 90 * L.k, L.head - 90 * L.k, '#ffffff', 24);
     if (E.mode === 'guard') { E.mode = 'flinch'; E.modeT = 0.22; }
     addText(this.texts, txt, L.cx + sgn(s) * 70 * L.k, L.head - 40 * L.k, col, txt === 'POW!' ? 32 : 36);
+    if (E.hat === 'on' && E.hp < E.maxHp * 0.5) {     // below half health the MAGA cap flies off
+      E.hat = null; const k = L.k;
+      this.hatFly = { x: L.cx, y: L.head - 22 * k, vx: sgn(s) * rand(170, 260) * k, vy: -rand(520, 640) * k, r: 0, vr: sgn(s) * rand(6, 10) };
+      addText(this.texts, "HAT'S OFF!", L.cx, L.head - 120 * k, '#ffffff', 30);
+    }
     this.shake = Math.max(this.shake, 0.35); this.cheer = Math.max(this.cheer, 0.5);
     if (E.hp <= 0) this.koRival();
   }
   blocked(s, parry) {
     const h = this.hands[s], E = this.e, L = this.layout();
+    E.blockT = FP.BLOCK_WINDOW; E.blockAt = this.t;     // it is blocking: a scream now stuns it
     if (parry) {
       h.st = 'stun'; h.t = 0; h.stunT = 0.8; this.lastPunches = [];
       addText(this.texts, 'PARRIED!', L.cx + sgn(s) * 60 * L.k, L.head - 30 * L.k, '#ff9de0', 30);
@@ -2541,6 +2592,22 @@ class IceBrawlFP extends IceBrawl {
     this.kos++; this.balance = FP.HP;   // full health for the next opponent
     this.cheer = 1; this.shake = 1;
     addText(this.texts, 'KNOCKOUT!', W / 2, H * 0.3, '#ffcf4a', 48);
+  }
+
+  /* ---------- screaming ---------- */
+  listen(dt) {
+    const lvl = fpMicLevel();
+    this.mic = Math.max(lvl, this.mic - dt * 0.8);   // for the meter
+    if (lvl > FP.SCREAM) { if (this.loudT === 0) this.loudAt = this.t; this.loudT += dt; } else this.loudT = 0;
+    this.screamCD -= dt;
+    const E = this.e;
+    // the scream has to start while it is blocking: screaming non-stop doesn't count, and screaming at other times does nothing
+    if (this.loudT >= FP.SCREAM_HOLD && this.screamCD <= 0 && E.blockT > 0 && this.loudAt >= E.blockAt - 0.15 &&
+        (E.mode === 'guard' || E.mode === 'tell' || E.mode === 'flinch')) {
+      E.mode = 'open'; E.modeT = FP.STUN; E.combo = 0; E.punish = null; E.baited = null; E.blockT = 0;   // same state as after your perfect block
+      this.screamCD = 1.2; this.shake = 0.6; this.cheer = 1;
+      const L = this.layout(); addText(this.texts, 'STUNNED!', L.cx, L.head - 110 * L.k, '#7dffb0', 36);
+    }
   }
 
   /* ---------- the rival ---------- */
@@ -2615,6 +2682,8 @@ class IceBrawlFP extends IceBrawl {
   }
   updateRival(dt) {
     const E = this.e;
+    E.blockT = Math.max(0, E.blockT - dt);
+    if (E.baited && (E.baited.t -= dt) <= 0) E.baited = null;
     switch (E.mode) {
       case 'guard':
         E.ft += dt; E.guardT -= dt; if (E.guardT <= 0) this.pickGuard();
@@ -2665,7 +2734,10 @@ class IceBrawlFP extends IceBrawl {
       for (const s of SIDES) {
         const h = this.hands[s]; h.t += dt;
         if (h.st === 'block') h.bt += dt;
-        else if (h.st === 'punch') {
+        else if (h.st === 'fake') {
+          if (!h.resolved && h.t >= FP.FAKE_LEN * 0.4) { h.resolved = true; this.landFake(s); }
+          if (h.st === 'fake' && h.t >= FP.FAKE_LEN) { h.st = 'rest'; h.t = 0; this.syncBlock(s); }
+        } else if (h.st === 'punch') {
           if (!h.resolved && h.t >= FP.PUNCH_HIT) { h.resolved = true; this.landPunch(s); }
           if (h.st === 'punch' && h.t >= FP.PUNCH_LEN) { h.st = 'recover'; h.t = 0; }
         } else if ((h.st === 'recover' && h.t >= FP.PUNCH_RECOVER) || (h.st === 'recoil' && h.t >= 0.4) || (h.st === 'stun' && h.t >= h.stunT)) {
@@ -2673,12 +2745,17 @@ class IceBrawlFP extends IceBrawl {
         }
       }
       if (this.state === 'running') this.updateRival(dt);
+      if (this.state === 'running') this.listen(dt);
     } else if (this.state === 'dying') {
       this.endT -= dt; this.fall = Math.min(1, this.fall + dt * 1.6);
       if (this.endT <= 0) this.state = 'done';
     } else if (this.state === 'winning') {
       this.endT -= dt; this.cheer = 1;
       if (this.endT <= 0) this.state = 'done';
+    }
+    if (this.hatFly) {
+      const f = this.hatFly; f.vy += 1500 * this.k * dt; f.x += f.vx * dt; f.y += f.vy * dt; f.r += f.vr * dt;
+      if (f.y > H + 120 * this.k) this.hatFly = null;
     }
     // animate the rival
     const E = this.e;
@@ -2691,7 +2768,7 @@ class IceBrawlFP extends IceBrawl {
     }
     for (const s of SIDES) {
       const h = this.hands[s], tgt = this.handTarget(s);
-      if (!h.pos || h.st === 'punch') h.pos = tgt;
+      if (!h.pos || h.st === 'punch' || h.st === 'fake') h.pos = tgt;
       else { const r = h.st === 'block' ? 30 : 14; h.pos.x = ease(h.pos.x, tgt.x, dt, r); h.pos.y = ease(h.pos.y, tgt.y, dt, r); h.pos.s = ease(h.pos.s, tgt.s, dt, r); }
     }
     tickTexts(this.texts, dt);
@@ -2730,6 +2807,10 @@ class IceBrawlFP extends IceBrawl {
         const p = h.t < FP.PUNCH_HIT ? h.t / FP.PUNCH_HIT : 1 - (h.t - FP.PUNCH_HIT) / (FP.PUNCH_LEN - FP.PUNCH_HIT);
         const L = this.layout();
         return P_LERP(rest, { x: W / 2 + g * 48 * k, y: L.head + 24 * k, s: 0.5 }, 1 - (1 - clamp(p, 0, 1)) ** 2);
+      }
+      case 'fake': {                                    // a short, sharp jerk forward that stops halfway
+        const L = this.layout();
+        return P_LERP(rest, { x: W / 2 + g * 48 * k, y: L.head + 24 * k, s: 0.5 }, Math.sin(Math.PI * clamp(h.t / FP.FAKE_LEN, 0, 1)) * 0.42);
       }
       case 'block': {
         const over = Math.max(0, h.bt - FP.GOOD), tr = Math.sin(this.t * 45) * Math.min(1, over) * 5 * k;
@@ -2848,6 +2929,22 @@ class IceBrawlFP extends IceBrawl {
     ctx.closePath(); ctx.fill(); ctx.stroke();
     ctx.strokeStyle = '#fff1bf'; ctx.lineWidth = 3 * k;
     for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.moveTo(hx - 34 * k + i * 8 * k, hy - 40 * k + i * 2 * k); ctx.quadraticCurveTo(hx + 10 * k, hy - 66 * k + i * 8 * k, hx + 48 * k - i * 6 * k, hy - 30 * k + i * 4 * k); ctx.stroke(); }
+    if (this.e.hat === 'on') this.drawMagaCap(ctx, hx, hy - 32 * k, k, 0);
+  }
+  drawMagaCap(ctx, x, y, k, rot) {                       // (x, y) = middle of the cap's band
+    ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
+    ctx.strokeStyle = OUT; ctx.lineWidth = 3.5 * k; ctx.lineJoin = 'round';
+    ctx.fillStyle = '#d62828';                                           // crown
+    ctx.beginPath(); ctx.moveTo(-56 * k, 6 * k); ctx.bezierCurveTo(-60 * k, -66 * k, 60 * k, -66 * k, 56 * k, 6 * k); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = 'rgba(0,0,0,.25)'; ctx.lineWidth = 2 * k;          // panel seams
+    ctx.beginPath(); ctx.moveTo(-20 * k, 4 * k); ctx.quadraticCurveTo(-18 * k, -36 * k, 0, -47 * k); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(20 * k, 4 * k); ctx.quadraticCurveTo(18 * k, -36 * k, 0, -47 * k); ctx.stroke();
+    ctx.fillStyle = '#b71c1c'; ctx.strokeStyle = OUT; ctx.lineWidth = 2 * k; circle(ctx, 0, -48 * k, 4.5 * k); ctx.stroke();
+    ctx.fillStyle = '#ffffff'; ctx.font = `900 ${10 * k}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('MAKE AMERICA', 0, -21 * k); ctx.fillText('GREAT AGAIN', 0, -9 * k);
+    ctx.fillStyle = '#c21f1f'; ctx.strokeStyle = OUT; ctx.lineWidth = 3.5 * k;   // brim, seen from the front
+    ctx.beginPath(); ctx.moveTo(-60 * k, 4 * k); ctx.quadraticCurveTo(0, 36 * k, 60 * k, 4 * k); ctx.quadraticCurveTo(0, 16 * k, -60 * k, 4 * k); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.restore();
   }
   drawKimHead(ctx, hx, hy, k, dazed, mode) {
     const skin = '#f1d2b4';
@@ -2933,6 +3030,15 @@ class IceBrawlFP extends IceBrawl {
       ctx.fillStyle = '#ff9de0'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(L.cx - (E.combo - 1) * 9 * k + i * 18 * k, L.head - 78 * k, 6 * k, 0, TAU); ctx.fill(); ctx.stroke();
     }
+    if (this.state === 'running' && E.blockT > 0 && (E.mode === 'guard' || E.mode === 'tell' || E.mode === 'flinch')) {
+      const f = E.fist[E.guard], L = this.layout(), a = E.blockT / FP.BLOCK_WINDOW;
+      if (f) { ctx.save(); ctx.globalAlpha = 0.8 * a; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 5 * k; ctx.beginPath(); ctx.arc(f.x, f.y, 40 * k * f.s, 0, TAU); ctx.stroke(); ctx.restore(); }
+      if (FP_MIC.state === 'on') {
+        ctx.save(); ctx.globalAlpha = Math.min(1, a * 2); ctx.font = `900 ${20 * k}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.lineWidth = 5; ctx.strokeStyle = '#13223f'; ctx.strokeText('🎤 SCREAM!', L.cx, L.head - 100 * k);
+        ctx.fillStyle = '#7dffb0'; ctx.fillText('🎤 SCREAM!', L.cx, L.head - 100 * k); ctx.restore();
+      }
+    }
     if (E.mode === 'open') {
       const L = this.layout();
       ctx.save(); ctx.globalAlpha = 0.5 + 0.4 * Math.sin(this.t * 30);
@@ -2972,13 +3078,26 @@ class IceBrawlFP extends IceBrawl {
     ctx.fillStyle = 'rgba(14,22,44,.6)'; rr(ctx, sx - 4, sy - 4, sw + 8, 14, 7); ctx.fill();
     ctx.fillStyle = this.stamina < FP.PUNCH_COST ? '#ff5a5a' : '#8ecae6'; rr(ctx, sx, sy, sw * this.stamina / 100, 6, 3); ctx.fill();
     ctx.font = `900 11px ${FONT}`; ctx.fillStyle = '#13223f'; ctx.fillText('STAMINA', W / 2, sy - 12);
+    // microphone: level meter with the scream line
+    const mx = bx + 40, my = by + 34, mw = bw - 40;          // under the rival's health bar
+    if (FP_MIC.state === 'on') {
+      const full = FP.SCREAM * 2, lv = clamp(this.mic / full, 0, 1);
+      ctx.fillStyle = 'rgba(14,22,44,.7)'; rr(ctx, bx - 10, my - 10, bw + 20, 22, 11); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,.15)'; rr(ctx, mx, my - 3, mw, 6, 3); ctx.fill();
+      ctx.fillStyle = this.mic > FP.SCREAM ? '#7dffb0' : '#c9d3de'; rr(ctx, mx, my - 3, mw * lv, 6, 3); ctx.fill();
+      ctx.fillStyle = '#ffcf4a'; ctx.fillRect(mx + mw * 0.5 - 1, my - 6, 2, 12);   // scream line
+      ctx.font = `900 11px ${FONT}`; ctx.fillStyle = '#eaf4ff'; ctx.fillText('🎤', bx + 14, my + 1);
+    } else if (FP_MIC.state === 'denied' || FP_MIC.state === 'none') {
+      ctx.fillStyle = 'rgba(14,22,44,.7)'; rr(ctx, bx - 10, my - 10, bw + 20, 22, 11); ctx.fill();
+      ctx.font = `800 11px ${FONT}`; ctx.fillStyle = 'rgba(234,244,255,.75)'; ctx.fillText('🎤 mic off: no scream stuns', bx + bw / 2, my + 1);
+    }
     // controls
     if (this.touch) {
       ctx.save(); ctx.globalAlpha = 0.28; ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#13223f'; ctx.lineWidth = 3;
       for (const s of SIDES) {
         const x = s === 'L' ? 54 : W - 54;
-        for (const [y, t] of [[H * 0.42, 'PUNCH'], [H * 0.8, 'BLOCK']]) {
-          ctx.beginPath(); ctx.arc(x, y, 38, 0, TAU); ctx.fill(); ctx.stroke();
+        for (const [y, t] of [[H * 0.25, 'FAKE'], [H * 0.47, 'PUNCH'], [H * 0.8, 'BLOCK']]) {
+          ctx.beginPath(); ctx.arc(x, y, t === 'BLOCK' ? 38 : 32, 0, TAU); ctx.fill(); ctx.stroke();
           ctx.globalAlpha = 0.8; ctx.fillStyle = '#13223f'; ctx.font = `900 12px ${FONT}`; ctx.fillText(t, x, y);
           ctx.globalAlpha = 0.28; ctx.fillStyle = '#ffffff';
         }
@@ -2986,8 +3105,8 @@ class IceBrawlFP extends IceBrawl {
       ctx.restore();
     } else {
       ctx.font = `800 13px ${FONT}`; ctx.fillStyle = 'rgba(19,34,63,.75)';
-      ctx.fillText('Q punch · A block', 90, H - 16);
-      ctx.fillText('D block · E punch', W - 90, H - 16);
+      ctx.fillText('Q punch · A block · Z fake', 110, H - 16);
+      ctx.fillText('C fake · D block · E punch', W - 110, H - 16);
     }
   }
   draw(ctx) {
@@ -2997,6 +3116,7 @@ class IceBrawlFP extends IceBrawl {
     if (this.shake > 0) ctx.translate(rand(-1, 1) * this.shake * 9, rand(-1, 1) * this.shake * 6);
     this.drawArena(ctx);
     this.drawRival(ctx);
+    if (this.hatFly) this.drawMagaCap(ctx, this.hatFly.x, this.hatFly.y, this.k, this.hatFly.r);
     this.drawTell(ctx);
     if (this.state !== 'dying' && this.state !== 'done') this.drawHands(ctx);
     ctx.restore();
@@ -3062,7 +3182,7 @@ const GAMES = [
     id: 'brawlfp', name: 'Ice Brawl: Face-Off', icon: '👊', overTitle: 'Down on the ice!', meterLabel: 'Balance',
     art: 'radial-gradient(circle at 50% 38%,#e63946 0 22%,transparent 23%),linear-gradient(180deg,#1b2440 0%,#2a3456 55%,#dcefff 55%,#f4faff 100%)',
     desc: 'First-person hockey fight. Punch and block with each hand, knock out your rival, then Trump and Kim Jong Un.',
-    howTo: '<b>Q</b>/<b>E</b> punch, hold <b>A</b>/<b>D</b> to block (touch: top half punches, bottom half blocks). Block the side the punch comes from just before it lands for a <b>PERFECT</b> and a free counter. Long blocks get weak. Beat your rival, then the final boss and the final final boss.',
+    howTo: '<b>Q</b>/<b>E</b> punch, <b>Z</b>/<b>C</b> fake, hold <b>A</b>/<b>D</b> to block (touch: top fakes, middle punches, bottom blocks). Block just before a hit for a <b>PERFECT</b>. Fake, then hit the other side for a <b>FAKE-OUT</b>. <b>Scream</b> into the mic when they block to stun them.',
     winOnly: true, goal: 'Knock out your rival, Trump and Kim Jong Un to win. No timer, no score.',   // win or lose, no survival score
     theme: { hudBg: 'rgba(14,22,44,.62)', hudInk: '#eaf4ff', panelBg: 'linear-gradient(165deg,#ffffff,#dcecf8)', panelInk: '#13223f', panelEdge: '#2f6fe0', accent: '#2f6fe0', accentInk: '#ffffff' },
     create: v => new IceBrawlFP(v)
