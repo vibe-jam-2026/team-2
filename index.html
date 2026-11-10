@@ -909,7 +909,8 @@ class JetEscape {
    Without WebGL the hub falls back to the 2D game.
    ===================================================================== */
 const J3 = { ZONE: 520, CITY: 260, CORR: 14, CEIL: 22, FLOOR: 1.3, GRAV: 26, FLAP: 12, FAR: 330,
-  CALM: 47, NUKE_AT: 50, WIN_AT: 60 };   // regular missiles stop at CALM, the final nuke comes at NUKE_AT, you win at WIN_AT
+  CALM: 47, NUKE_AT: 50, WIN_AT: 60,
+  NUKE_LOCK: 1.3, NUKE_HOMING: 6, NUKE_BLAST: 2.8 };   // the nuke follows you until NUKE_LOCK s before impact   // regular missiles stop at CALM, the final nuke comes at NUKE_AT, you win at WIN_AT
 const COPPER3 = 0x5c9e86;
 const keys3 = new Set();                 // keys held right now (filled by the input wiring below)
 const pointer3 = { down: false, x: 0 };  // finger / mouse held down: steer towards it
@@ -1687,8 +1688,9 @@ class JetEscape3D extends JetEscape {
     if (!n) return;
     n.g.position.z += n.v * dt;
     const rel = n.g.position.z - this.pz, tti = -rel / Math.max(1, n.v + this.speed);
-    if (!n.passed && tti > 0.85 && this.state === 'running') {     // it follows you... then locks on, 0.85 s before impact
-      const k = 9 * dt;
+    n.locked = tti <= J3.NUKE_LOCK;
+    if (!n.passed && !n.locked && this.state === 'running') {      // it follows you... then locks on its course
+      const k = J3.NUKE_HOMING * dt;
       n.x += clamp(this.px - n.x, -k, k); n.y += clamp(this.py - n.y, -k * 0.8, k * 0.8);
     }
     n.g.position.x = n.x; n.g.position.y = n.y + Math.sin(this.t * 7) * 0.15; n.g.rotation.z += dt * 2.2;
@@ -1700,7 +1702,7 @@ class JetEscape3D extends JetEscape {
     if (!n.passed && n.rel < 0 && rel >= 0) {
       n.passed = true;
       if (this.state === 'running') {
-        if (Math.hypot(n.x - this.px, n.y - this.py) < 3.4) this.crash('nuke');   // bigger blast than a normal missile
+        if (Math.hypot(n.x - this.px, n.y - this.py) < J3.NUKE_BLAST) this.crash('nuke');   // a bit bigger blast than a normal missile
         else {
           this.nukeDone = true; this.alarm = 0; this.flashT = 0.6; this.flashCol = '#ffffff'; this.shake3 = 0.9;
           addText(this.texts, 'NUKE DODGED!', this.v.W / 2, this.v.H * 0.36, '#7dffb0', 46);
@@ -1789,9 +1791,12 @@ class JetEscape3D extends JetEscape {
       ctx.lineWidth = 7; ctx.strokeStyle = '#2a0000'; ctx.strokeText('NUKE INCOMING', W / 2, y);
       ctx.fillStyle = '#ff3b3b'; ctx.fillText('NUKE INCOMING', W / 2, y);
       drawTrefoil(ctx, W / 2 - w / 2 - 30, y, 17); drawTrefoil(ctx, W / 2 + w / 2 + 30, y, 17);
-      ctx.globalAlpha = 1; ctx.font = `800 16px ${FONT}`; ctx.fillStyle = '#fff';
-      ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.strokeText('It follows you. Dodge at the last second!', W / 2, y + 32);
-      ctx.fillText('It follows you. Dodge at the last second!', W / 2, y + 32);
+      const locked = this.nuke && this.nuke.locked && !this.nuke.passed;
+      const sub = locked ? 'LOCKED ON: DODGE NOW!' : 'It follows you. Dodge when it locks on!';
+      ctx.globalAlpha = 1; ctx.font = locked ? `900 24px ${FONT}` : `800 16px ${FONT}`;
+      ctx.fillStyle = locked ? (Math.floor(this.t * 10) % 2 ? '#ffe14a' : '#ffffff') : '#fff';
+      ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(0,0,0,.65)'; ctx.strokeText(sub, W / 2, y + 34);
+      ctx.fillText(sub, W / 2, y + 34);
       ctx.restore();
     }
     if (this.flashT > 0) {
@@ -3023,7 +3028,7 @@ const GAMES = [
     id: 'jet', name: 'Jet Escape', icon: '✈️', overTitle: 'Shot down!',
     art: 'linear-gradient(180deg,#5ec4ff 0%,#bfe9ff 55%,#ffd08a 100%)',
     desc: 'Fly your fighter jet in 3D across Sweden, from Linköping to the Norwegian border, and dodge the incoming missiles.',
-    howTo: 'Fly with W A S D or the arrow keys: W climbs, S dives, A and D steer. Space or a tap also boosts you up. Dodge the missiles coming at you (their shadows on the ground help), steer round the purple jammed zones and don\'t touch the ground. Survive 60 seconds to win, but first you must dodge the final nuke. It follows you, so move at the last second!',
+    howTo: 'Fly with W A S D or the arrow keys: W climbs, S dives, A and D steer. Space or a tap also boosts you up. Dodge the missiles coming at you (their shadows on the ground help), steer round the purple jammed zones and don\'t touch the ground. Survive 60 seconds to win, but first you must dodge the final nuke. It follows you, so move when it says DODGE NOW!',
     targetTime: 60,
     theme: { hudBg: 'rgba(8,37,77,.5)', hudInk: '#ffffff', panelBg: 'linear-gradient(165deg,#f2faff,#c6e6ff)', panelInk: '#0b2a4a', panelEdge: '#ffffff', accent: '#ff7a45', accentInk: '#ffffff' },
     create: v => (gl3() ? new JetEscape3D(v) : new JetEscape(v))   // 3D when WebGL works, else the 2D version
