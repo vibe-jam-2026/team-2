@@ -917,6 +917,102 @@ const pointer3 = { down: false, x: 0 };  // finger / mouse held down: steer towa
 const key3 = (...codes) => codes.some(c => keys3.has(c));
 let G3 = null;                           // shared renderer, geometries, materials, textures; false = no 3D
 
+/* ---------- sound: synthesized with Web Audio, no sound files ---------- */
+const SND = (() => {
+  let ac = null, master = null, noiseBuf = null, muted = false, eng = null, hiss = null, siren = null;
+  const ctx = () => {
+    if (!ac) {
+      try {
+        ac = new (window.AudioContext || window.webkitAudioContext)();
+        master = ac.createGain(); master.gain.value = 0.7; master.connect(ac.destination);
+        noiseBuf = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate);
+        const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      } catch (e) { ac = null; }
+    }
+    if (ac && ac.state === 'suspended') ac.resume();
+    return ac;
+  };
+  const noiseSrc = a => { const n = a.createBufferSource(); n.buffer = noiseBuf; n.loop = true; return n; };
+  function tone(freq, dur, { type = 'sine', vol = 0.15, to = null, delay = 0, attack = 0.005 } = {}) {
+    const a = ctx(); if (!a) return;
+    const t = a.currentTime + delay, o = a.createOscillator(), g = a.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t); if (to) o.frequency.exponentialRampToValueAtTime(to, t + dur);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + attack); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(master); o.start(t); o.stop(t + dur + 0.05);
+  }
+  function noise(dur, { vol = 0.2, f = 1000, to = null, q = 1, type = 'bandpass', delay = 0, attack = 0.01 } = {}) {
+    const a = ctx(); if (!a) return;
+    const t = a.currentTime + delay, n = noiseSrc(a), fl = a.createBiquadFilter(), g = a.createGain();
+    fl.type = type; fl.frequency.setValueAtTime(f, t); if (to) fl.frequency.exponentialRampToValueAtTime(to, t + dur); fl.Q.value = q;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + attack); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    n.connect(fl).connect(g).connect(master); n.start(t, Math.random()); n.stop(t + dur + 0.05);
+  }
+  // the jet engine: two detuned oscillators and filtered noise, always running, faded in and out
+  function engine(on, level, boost) {
+    if (!ac || (!eng && !on)) return;
+    if (!eng) {
+      const o1 = ac.createOscillator(), o2 = ac.createOscillator(), n = noiseSrc(ac), nf = ac.createBiquadFilter(), lf = ac.createBiquadFilter(), g = ac.createGain();
+      o1.type = 'sawtooth'; o2.type = 'triangle'; nf.type = 'bandpass'; nf.frequency.value = 900; nf.Q.value = 0.6;
+      lf.type = 'lowpass'; lf.frequency.value = 700; g.gain.value = 0;
+      o1.connect(lf); o2.connect(lf); n.connect(nf).connect(lf); lf.connect(g).connect(master);
+      o1.start(); o2.start(); n.start();
+      eng = { o1, o2, lf, nf, g };
+    }
+    const t = ac.currentTime;
+    eng.g.gain.setTargetAtTime(on ? 0.05 + boost * 0.05 : 0, t, 0.08);
+    eng.o1.frequency.setTargetAtTime(52 + level * 22 + boost * 26, t, 0.1);
+    eng.o2.frequency.setTargetAtTime(105 + level * 40 + boost * 60, t, 0.1);
+    eng.lf.frequency.setTargetAtTime(500 + level * 300 + boost * 1400, t, 0.1);
+    eng.nf.frequency.setTargetAtTime(800 + boost * 1600, t, 0.1);
+  }
+  // crackling static near a jammed zone
+  function staticHiss(level) {
+    if (!ac || (!hiss && level <= 0)) return;
+    if (!hiss) {
+      const n = noiseSrc(ac), f = ac.createBiquadFilter(), g = ac.createGain();
+      f.type = 'highpass'; f.frequency.value = 2500; g.gain.value = 0; n.connect(f).connect(g).connect(master); n.start();
+      hiss = { g };
+    }
+    hiss.g.gain.setTargetAtTime(level > 0 ? level * (0.06 + Math.random() * 0.12) : 0, ac.currentTime, 0.02);
+  }
+  // the nuke's air-raid siren
+  function sirenOn(on) {
+    if (!ac || (!siren && !on)) return;
+    if (!siren) {
+      const o = ac.createOscillator(), lfo = ac.createOscillator(), lg = ac.createGain(), g = ac.createGain();
+      o.type = 'sawtooth'; o.frequency.value = 720; lfo.frequency.value = 1.4; lg.gain.value = 180; g.gain.value = 0;
+      const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 1800;
+      lfo.connect(lg).connect(o.frequency); o.connect(f).connect(g).connect(master); o.start(); lfo.start();
+      siren = { g };
+    }
+    siren.g.gain.setTargetAtTime(on ? 0.06 : 0, ac.currentTime, 0.1);
+  }
+  return {
+    unlock: ctx, tone, noise, engine, staticHiss, siren: sirenOn,
+    get muted() { return muted; },
+    toggleMute() { muted = !muted; if (ctx()) master.gain.setTargetAtTime(muted ? 0 : 0.7, ac.currentTime, 0.05); return muted; },
+    silence() { engine(false, 0, 0); staticHiss(0); sirenOn(false); },
+  };
+})();
+const sfx3 = {
+  boost: () => SND.noise(0.25, { vol: 0.1, f: 600, to: 2400, q: 0.8 }),
+  whoosh: vol => SND.noise(0.55, { vol, f: 3200, to: 260, q: 1.4, attack: 0.1 }),
+  close: () => { SND.tone(1500, 0.16, { type: 'square', vol: 0.04, to: 500 }); SND.tone(1900, 0.1, { type: 'sine', vol: 0.05, delay: 0.05 }); },
+  boom: big => {
+    SND.noise(big ? 2.4 : 1.1, { vol: big ? 0.9 : 0.6, f: big ? 900 : 1600, to: 50, type: 'lowpass', q: 0.7 });
+    SND.tone(big ? 65 : 110, big ? 1.8 : 0.8, { vol: big ? 0.6 : 0.45, to: 28 });
+  },
+  zap: () => { for (let k = 0; k < 7; k++) SND.tone(rand(200, 1800), 0.06, { type: 'square', vol: 0.05, delay: k * 0.04 }); SND.noise(0.5, { vol: 0.3, f: 4000, q: 0.5 }); },
+  chime: () => { SND.tone(880, 0.4, { type: 'triangle', vol: 0.11 }); SND.tone(1320, 0.6, { type: 'triangle', vol: 0.09, delay: 0.14 }); },
+  warn: () => { for (let k = 0; k < 3; k++) SND.tone(540, 0.11, { type: 'square', vol: 0.045, delay: k * 0.18 }); },
+  lock: () => { for (let k = 0; k < 4; k++) SND.tone(1600, 0.07, { type: 'square', vol: 0.05, delay: k * 0.09 }); },
+  victory: () => {
+    [523, 659, 784, 1047].forEach((f, i) => { SND.tone(f, i === 3 ? 1 : 0.24, { type: 'triangle', vol: 0.16, delay: i * 0.15 }); SND.tone(f / 2, i === 3 ? 1 : 0.24, { type: 'square', vol: 0.04, delay: i * 0.15 }); });
+  },
+  launch: () => { SND.noise(0.7, { vol: 0.35, f: 700, to: 3200, q: 0.7 }); SND.tone(220, 0.3, { type: 'sawtooth', vol: 0.06, to: 440 }); },
+  uhoh: () => { SND.tone(1000, 1, { type: 'sine', vol: 0.16, to: 220, attack: 0.05 }); },   // slide whistle down
+};
+
 function gl3() {
   if (G3 !== null) return G3 || null;
   try {
@@ -1439,9 +1535,10 @@ class JetEscape3D extends JetEscape {
     this.jams = []; this.jamPlan = [12 + rand(-2, 2), 27 + rand(-2, 2), 40 + rand(-2, 2)]; this.jamI = 0;   // three jammed zones per run
     this.nuke = null; this.nukeDone = false; this.won = false; this.cause = null; this.overTitle = undefined;
     this.alarm = 0; this.flashT = 0; this.flashCol = '#fff'; this.shake3 = 0;
+    this.selfM = null; this.keyQ = false; this.keyM = false; this.lastBanner = null; this.jamNear = Infinity;
     this.build();
   }
-  leave() { G3.el.style.display = 'none'; }
+  leave() { G3.el.style.display = 'none'; SND.silence(); }
   build() {
     const G = G3, T = G.T, s = this.scene = new T.Scene();
     G.el.style.display = 'block';
@@ -1511,9 +1608,9 @@ class JetEscape3D extends JetEscape {
     if (hash(i + 0.5) < 0.8) moose3(g, -15, -(s0 + J3.CITY + 110));
     return g;
   }
-  start() { this.state = 'running'; this.flap(); }
+  start() { SND.unlock(); this.state = 'running'; this.flap(); }
   action() { if (this.state === 'running') this.flap(); }
-  flap() { this.vy = J3.FLAP; this.flame = 1; }
+  flap() { this.vy = J3.FLAP; this.flame = 1; sfx3.boost(); }
   puff(x, y, z, size, life) {
     const p = this.puffs[this.puffI++ % this.puffs.length];
     p.m.position.set(x, y, z); p.size = size; p.life = p.max = life; p.m.visible = true;
@@ -1535,12 +1632,14 @@ class JetEscape3D extends JetEscape {
   get overNote() {
     if (this.won) return 'You dodged the final nuke and made it across Sweden to Norway!';
     const base = Object.getOwnPropertyDescriptor(JetEscape.prototype, 'overNote').get.call(this);
-    return (this.cause === 'nuke' ? 'The final nuke got you. ' : this.cause === 'jam' ? 'You flew into a jammed zone. ' : '') + base;
+    return ({ nuke: 'The final nuke got you. ', jam: 'You flew into a jammed zone. ', self: 'You shot yourself down. Nice one. ' }[this.cause] || '') + base;
   }
   crash(cause = 'missile') {
     this.cause = cause;
-    this.overTitle = { missile: 'Shot down!', ground: 'Crashed!', jam: 'Jammed!', nuke: 'Nuked!' }[cause];
+    this.overTitle = { missile: 'Shot down!', ground: 'Crashed!', jam: 'Jammed!', nuke: 'Nuked!', self: 'Self-destruct!' }[cause];
     if (cause === 'nuke') { this.flashT = 0.9; this.flashCol = '#ffd08a'; this.shake3 = 1.2; this.alarm = 0; }
+    if (cause === 'self') { this.flashT = 0.5; this.flashCol = '#ffd08a'; this.shake3 = 0.8; }
+    if (cause === 'jam') sfx3.zap(); else sfx3.boom(cause === 'nuke' || cause === 'self');
     this.state = 'dying'; this.endT = 1.4; this.jet.visible = false; this.shadow.visible = false;
     for (const b of this.boom) {
       const a = rand(0, TAU), e = rand(-1, 1), sp = rand(4, 20);
@@ -1549,7 +1648,7 @@ class JetEscape3D extends JetEscape {
       b.life = b.max = rand(0.5, 1.2);
     }
     const p = this.jetScreen || { x: this.v.W / 2, y: this.v.H / 2 };
-    addText(this.texts, cause === 'jam' ? 'ZZZT!' : cause === 'nuke' ? 'KABOOM!' : 'POOF!', p.x + 30, p.y - 40, cause === 'jam' ? '#d98cff' : '#ffcf4a', cause === 'nuke' ? 56 : 40);
+    addText(this.texts, cause === 'jam' ? 'ZZZT!' : cause === 'nuke' ? 'KABOOM!' : cause === 'self' ? 'OWN GOAL!' : 'POOF!', p.x + 30, p.y - 40, cause === 'jam' ? '#d98cff' : '#ffcf4a', cause === 'nuke' ? 56 : 40);
   }
   fly(dt) {
     const up = key3('KeyW', 'ArrowUp'), dn = key3('KeyS', 'ArrowDown'), lf = key3('KeyA', 'ArrowLeft'), rt = key3('KeyD', 'ArrowRight');
@@ -1590,6 +1689,12 @@ class JetEscape3D extends JetEscape {
     }
     const js = this.jetScreen || { x: 0, y: 0 };
     this.trackRoute(-this.pz, running, J3.ZONE, 8, js.x + 60, js.y - 50, dt);
+    if (this.banner && this.banner !== this.lastBanner && running) sfx3.chime();   // arriving in a new city
+    this.lastBanner = this.banner;
+    const q = key3('KeyQ'), mk = key3('KeyM');
+    if (q && !this.keyQ && running && !this.selfM) this.fireSelf();             // easter egg: Q = self-destruct
+    if (mk && !this.keyM) SND.toggleMute();                                      // M = sound on/off
+    this.keyQ = q; this.keyM = mk;
 
     for (const m of this.missiles) {                         // missiles fly straight at you
       m.g.position.z += m.v * dt; m.sh.position.z = m.g.position.z;
@@ -1601,7 +1706,10 @@ class JetEscape3D extends JetEscape {
         const miss = Math.hypot(m.x - this.px, m.y - this.py);
         if (this.state === 'running') {
           if (miss < 2.1) this.crash();
-          else if (miss < 3.6 && this.jetScreen) addText(this.texts, 'CLOSE!', this.jetScreen.x + 40, this.jetScreen.y - 46, '#7fd3ff', 24);
+          else {
+            sfx3.whoosh(miss < 3.6 ? 0.4 : miss < 8 ? 0.22 : 0.1);
+            if (miss < 3.6) { sfx3.close(); if (this.jetScreen) addText(this.texts, 'CLOSE!', this.jetScreen.x + 40, this.jetScreen.y - 46, '#7fd3ff', 24); }
+          }
         }
       }
       m.rel = rel;
@@ -1609,6 +1717,8 @@ class JetEscape3D extends JetEscape {
     }
     this.missiles = this.missiles.filter(m => !m.dead);
     this.updateNuke(dt);
+    this.updateSelf(dt);
+    for (const j of this.jams) if (!j.warned && this.pz - j.z0 < 280) { j.warned = true; if (running) sfx3.warn(); }
     this.updateJams();
     this.alarm = Math.max(0, this.alarm - dt); this.flashT = Math.max(0, this.flashT - dt); this.shake3 = Math.max(0, this.shake3 - dt * 1.5);
     for (const p of this.puffs) {
@@ -1670,9 +1780,47 @@ class JetEscape3D extends JetEscape {
     this.ground.position.set(this.px, -0.5, this.pz - 600);
   }
   win() {
+    sfx3.victory();
     this.state = 'won'; this.won = true; this.endT = 2.4; this.overTitle = 'Mission complete!';
     this.banner = { title: 'Mission complete!', sub: 'You survived the final nuke', t: 2.4, max: 2.4 };
     addText(this.texts, 'VICTORY!', this.v.W / 2, this.v.H * 0.42, '#ffd25a', 52);
+  }
+  // ----- easter egg: Q fires a missile that loops round and comes back for you -----
+  fireSelf() {
+    const T = G3.T, g = missile3();
+    g.scale.setScalar(1.3);
+    const p = new T.Vector3(this.px, this.py - 0.5, this.pz - 3);
+    const v = new T.Vector3(rand(-0.15, 0.15), 0.3, -1).normalize().multiplyScalar(this.speed + 50);   // forward and a little up
+    g.position.copy(p); this.scene.add(g);
+    this.selfM = { g, p, v, t: 0, st: 0, turned: false };
+    sfx3.launch();
+    if (this.jetScreen) addText(this.texts, 'FIRE!', this.jetScreen.x + 30, this.jetScreen.y - 60, '#ffcf4a', 26);
+  }
+  updateSelf(dt) {
+    const m = this.selfM;
+    if (!m) return;
+    const T = G3.T, target = new T.Vector3(this.px, this.py, this.pz);
+    m.t += dt;
+    if (m.t > 0.35) {                                             // it swings round in a loop and heads back
+      if (!m.turned) {
+        m.turned = true; sfx3.uhoh();
+        if (this.jetScreen) addText(this.texts, 'UH-OH...', this.jetScreen.x, this.jetScreen.y - 80, '#ff9de0', 28);
+      }
+      const dir = m.v.clone().normalize(), want = target.clone().sub(m.p).normalize();
+      const ang = dir.angleTo(want), turn = Math.min(ang, (3.2 + m.t * 3) * dt);
+      if (ang > 1e-4) {
+        let axis = dir.clone().cross(want);
+        if (axis.lengthSq() < 1e-6) axis = new T.Vector3(1, 0, 0);   // straight away from you: loop over the top
+        dir.applyAxisAngle(axis.normalize(), turn);
+      }
+      m.v.copy(dir.multiplyScalar(Math.max(m.v.length(), 80 + m.t * 25)));
+    }
+    m.p.addScaledVector(m.v, dt);
+    m.g.position.copy(m.p); m.g.lookAt(m.p.clone().add(m.v));     // the model's nose points along its flight
+    m.st -= dt;
+    if (m.st <= 0) { m.st = 0.025; this.puff(m.p.x, m.p.y, m.p.z, 0.9, 0.9); }
+    if (this.state === 'running' && m.p.distanceTo(target) < 2.2) { this.scene.remove(m.g); this.selfM = null; this.crash('self'); return; }
+    if (this.state !== 'running' && m.t > 3) { this.scene.remove(m.g); this.selfM = null; }
   }
   // ----- the final boss: a nuke that homes in on you until the last moment -----
   launchNuke() {
@@ -1682,12 +1830,14 @@ class JetEscape3D extends JetEscape {
     sh.rotation.x = -Math.PI / 2; sh.scale.setScalar(9); sh.position.set(this.px, 0.1, g.position.z); this.scene.add(sh);
     this.nuke = { g, sh, x: this.px, y: this.py, v: vn, rel: -dist, st: 0, passed: false };
     this.alarm = T0 + 0.4;
+    sfx3.warn();
   }
   updateNuke(dt) {
     const n = this.nuke;
     if (!n) return;
     n.g.position.z += n.v * dt;
     const rel = n.g.position.z - this.pz, tti = -rel / Math.max(1, n.v + this.speed);
+    if (!n.locked && tti <= J3.NUKE_LOCK && this.state === 'running') sfx3.lock();
     n.locked = tti <= J3.NUKE_LOCK;
     if (!n.passed && !n.locked && this.state === 'running') {      // it follows you... then locks on its course
       const k = J3.NUKE_HOMING * dt;
@@ -1705,6 +1855,7 @@ class JetEscape3D extends JetEscape {
         if (Math.hypot(n.x - this.px, n.y - this.py) < J3.NUKE_BLAST) this.crash('nuke');   // a bit bigger blast than a normal missile
         else {
           this.nukeDone = true; this.alarm = 0; this.flashT = 0.6; this.flashCol = '#ffffff'; this.shake3 = 0.9;
+          sfx3.boom(true); sfx3.whoosh(0.5);
           addText(this.texts, 'NUKE DODGED!', this.v.W / 2, this.v.H * 0.36, '#7dffb0', 46);
         }
       }
@@ -1740,7 +1891,7 @@ class JetEscape3D extends JetEscape {
       m3(g, 'sphere', G.jamBlink, sd * 19, 13.8, z0 + 3, 0.7, 0.7, 0.7);
     }
     this.scene.add(g);
-    this.jams.push({ g, z0, len, boxes });
+    this.jams.push({ g, z0, len, boxes, warned: false });
   }
   jamAhead(dist) { return this.jams.some(j => this.pz - j.z0 > -j.len - 10 && this.pz - j.z0 < dist); }
   checkJam() {
@@ -1764,6 +1915,7 @@ class JetEscape3D extends JetEscape {
     const W = this.v.W, H = this.v.H;
     let near = Infinity;
     for (const j of this.jams) { const d = this.pz - j.z0; if (d > -j.len) near = Math.min(near, Math.max(0, d)); }
+    this.jamNear = near;
     if (this.state === 'running' && near < 280) {
       const txt = near < 70 ? 'JAMMED ZONE: FIND THE GAP!' : '⚡ JAMMING ZONE AHEAD';
       ctx.save();
@@ -1817,13 +1969,17 @@ class JetEscape3D extends JetEscape {
     this.jetScreen = this.proj(this.px, this.py, this.pz);
     ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height); ctx.restore();
     this.drawFx(ctx);
+    const live = (this.state === 'running' || this.state === 'won') && !paused;
+    SND.engine(live, clamp(this.time / 70, 0, 1), this.flame);
+    SND.siren(live && this.state === 'running' && this.alarm > 0);
+    SND.staticHiss(live && this.state === 'running' && this.jamNear < 60 ? 1 - this.jamNear / 60 : 0);
     drawTexts(ctx, this.texts);
     this.drawHint(ctx);
     this.drawLocation(ctx);
   }
   drawHint(ctx) {                              // the controls, for the first seconds of a run
     if (this.state !== 'running' || this.time > 6) return;
-    const W = this.v.W, H = this.v.H, txt = 'W A S D / arrow keys: fly   ·   Space / tap: boost';
+    const W = this.v.W, H = this.v.H, txt = 'W A S D / arrow keys: fly   ·   Space / tap: boost   ·   M: sound';
     ctx.save(); ctx.globalAlpha = clamp((6 - this.time) / 1.5, 0, 1);
     ctx.font = `800 15px ${FONT}`;
     const w = ctx.measureText(txt).width + 36;
