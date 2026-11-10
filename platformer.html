@@ -54,7 +54,8 @@ const W = canvas.width, H = canvas.height, T = 32;
 
 /* ---------------------------------------------------------------- levels */
 const LEVELS = [
-  { name: 'Green Meadow', sky: ['#7fd3ff', '#d9f3ff'], boss: 'king', map: [
+  { name: 'Green Meadow', sky: ['#7fd3ff', '#d9f3ff'], boss: 'king',
+    bg: { sun: '#fff6c8', far: '#a9c8e8', near: '#7fa6cf', snow: '#ffffff', hill: '#8fd07a', trees: ['#3f9a4a', '#2f7d3c', '#5bb85a'], trunk: '#6b4428' }, map: [
     '                                                                                                            ',
     '                                                                                                            ',
     '                                                                                                            ',
@@ -70,7 +71,8 @@ const LEVELS = [
     '##########################################   ###############################################################',
     '##########################################   ###############################################################',
   ]},
-  { name: 'Spiky Caves', sky: ['#3b2a5c', '#8a5a9a'], boss: 'beetle', map: [
+  { name: 'Spiky Caves', sky: ['#3b2a5c', '#8a5a9a'], boss: 'beetle',
+    bg: { sun: '#e8e0ff', far: '#5a4580', near: '#47366a', snow: '#c9b8ec', hill: '#3a2c58', trees: ['#2a2046', '#231a3c', '#33285a'], trunk: '#1c1530' }, map: [
     '                                                                                                                      ',
     '                                                                                                                      ',
     '                                                                                                               GG     ',
@@ -86,7 +88,8 @@ const LEVELS = [
     '######################################################################################################################',
     '######################################################################################################################',
   ]},
-  { name: 'Cloud Top', sky: ['#ff9a6b', '#ffe0a8'], boss: 'queen', map: [
+  { name: 'Cloud Top', sky: ['#ff9a6b', '#ffe0a8'], boss: 'queen',
+    bg: { sun: '#fff1b0', far: '#f0a98a', near: '#d9826e', snow: '#fff4e8', hill: '#c56a5c', trees: ['#8a3f4a', '#6e2f3c', '#a24f56'], trunk: '#4a2228' }, map: [
     '                                                                                                                      GG      ',
     '                                                                                                                      GG      ',
     '                                                                                                                      GG      ',
@@ -458,13 +461,7 @@ function draw() {
   g.addColorStop(0, L.sky[0]); g.addColorStop(1, L.sky[1]);
   ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
 
-  // parallax hills
-  const cx = cam ? cam.x : now * 30;
-  ctx.fillStyle = 'rgba(255,255,255,.18)';
-  for (let i = -1; i < 8; i++) {
-    const hx = i * 220 - (cx * 0.3) % 220;
-    ctx.beginPath(); ctx.ellipse(hx, H - 40, 160, 120, 0, Math.PI, 0); ctx.fill();
-  }
+  drawBackground(L.bg, L.sky[1], cam ? cam.x : now * 40);
 
   if (state === 'title') return drawTitle();
 
@@ -541,6 +538,82 @@ function draw() {
 
   if (state === 'clear') banner('Level clear!', `${player.coins}/${coins.length} coins · ${levelTime.toFixed(1)}s`, 'Press Space for the next level');
   if (state === 'won') banner('You made it to the top! 🏁', `${totalCoins} coins in total · ${deaths} falls`, 'Press Space to play again');
+}
+
+/* ---------------------------------------------------------------- background
+   Parallax layers, far to near: sun, two mountain ranges with snow caps,
+   rolling hills, and two rows of trees. Shapes come from a fixed hash of
+   their index, so the scenery is the same every time you pass it. */
+const rnd = (i, seed) => { const v = Math.sin(i * 127.1 + seed * 311.7) * 43758.5453; return v - Math.floor(v); };
+const BASE = H - 92;                       // where the ground starts on screen
+
+function drawBackground(bg, hazeColor, camX) {
+  // a thin layer of haze between ranges makes far things look far away
+  const haze = a => { ctx.fillStyle = hazeColor; ctx.globalAlpha = a; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; };
+  // sun
+  ctx.fillStyle = bg.sun; ctx.globalAlpha = 0.9;
+  ctx.beginPath(); ctx.arc(W * 0.78, 110, 42, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 0.25; ctx.beginPath(); ctx.arc(W * 0.78, 110, 62, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
+  mountains(camX * 0.08, 300, 1, bg.far, bg.snow, 170, 110, 0.75);
+  haze(0.2);
+  mountains(camX * 0.16, 230, 2, bg.near, bg.snow, 130, 80, 0.85);
+  haze(0.15);
+  hills(camX * 0.28, bg.hill);
+  trees(camX * 0.4, 70, 3, bg.trees, bg.trunk, 0.65, BASE - 34);
+  haze(0.15);
+  trees(camX * 0.6, 95, 4, bg.trees, bg.trunk, 1, BASE + 4);
+  haze(0.18);                              // keeps the playfield in front easy to read
+}
+
+function mountains(off, seg, seed, color, snow, minH, varH, snowAlpha) {
+  const first = Math.floor(off / seg) - 1;
+  for (let i = first; i < first + W / seg + 3; i++) {
+    const x = i * seg - off + rnd(i, seed) * seg * 0.4;
+    const h = minH + rnd(i, seed + 9) * varH, w = seg * (0.75 + rnd(i, seed + 5) * 0.4);
+    const top = BASE - h;
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.moveTo(x - w, BASE + 10); ctx.lineTo(x - w * 0.12, top + 6); ctx.lineTo(x, top);
+    ctx.lineTo(x + w * 0.15, top + 8); ctx.lineTo(x + w, BASE + 10); ctx.fill();
+    // snow cap with a jagged lower edge
+    const sh = h * 0.26, k = sh / h;
+    ctx.fillStyle = snow; ctx.globalAlpha = snowAlpha;
+    ctx.beginPath(); ctx.moveTo(x - w * 0.12 * (1 + k * 6) , top + sh); ctx.lineTo(x - w * 0.12, top + 6); ctx.lineTo(x, top);
+    ctx.lineTo(x + w * 0.15, top + 8); ctx.lineTo(x + w * k * 1.2, top + sh);
+    ctx.lineTo(x + w * k * 0.4, top + sh * 0.7); ctx.lineTo(x - w * k * 0.2, top + sh * 1.05); ctx.lineTo(x - w * k * 0.8, top + sh * 0.75);
+    ctx.fill(); ctx.globalAlpha = 1;
+  }
+}
+
+function hills(off, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.moveTo(0, H);
+  for (let x = 0; x <= W; x += 8) {
+    const wx = x + off;
+    ctx.lineTo(x, BASE - 40 - Math.sin(wx * 0.006) * 22 - Math.sin(wx * 0.017 + 1) * 10);
+  }
+  ctx.lineTo(W, H); ctx.fill();
+}
+
+function trees(off, spacing, seed, colors, trunk, scale, base) {
+  const first = Math.floor(off / spacing) - 1;
+  for (let i = first; i < first + W / spacing + 3; i++) {
+    const x = i * spacing - off + (rnd(i, seed) - 0.5) * spacing * 0.6;
+    const s = scale * (0.75 + rnd(i, seed + 2) * 0.55);
+    const c = colors[Math.floor(rnd(i, seed + 7) * colors.length)];
+    ctx.fillStyle = trunk; ctx.fillRect(x - 3 * s, base - 16 * s, 6 * s, 16 * s);
+    ctx.fillStyle = c;
+    if (rnd(i, seed + 4) < 0.6) {                // pine: three stacked triangles
+      for (let k = 0; k < 3; k++) {
+        const y = base - 14 * s - k * 18 * s, hw = (24 - k * 5) * s;
+        ctx.beginPath(); ctx.moveTo(x - hw, y); ctx.lineTo(x, y - 30 * s); ctx.lineTo(x + hw, y); ctx.fill();
+      }
+    } else {                                     // round leafy tree
+      ctx.beginPath(); ctx.arc(x, base - 38 * s, 22 * s, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x - 13 * s, base - 26 * s, 14 * s, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x + 13 * s, base - 26 * s, 14 * s, 0, Math.PI * 2); ctx.fill();
+    }
+  }
 }
 
 function drawBossBar(b) {
