@@ -2585,10 +2585,10 @@ const RIVALS = [
    nuke: holds a NUKE button in one hand and swaps it between hands now and then */
 const ROSTER = [
   { kind: 'skater', label: 'RIVAL', hp: 90, diff: 0, ramp: 0.25, react: 0.22, dmg: 0.75, speed: 1.1, hook: 0.5, feint: 0.6, combo: 0.5, parry: 0.12, smart: 0.2, bite: 0.9, col: 0 },
-  { kind: 'trump', label: 'FINAL BOSS', name: 'TRUMP', hp: 170, diff: 0.3, ramp: 0.5, react: 0.45, dmg: 1.3, speed: 1.1, hook: 0.7, feint: 1, combo: 0.9, parry: 0.18, smart: 0.4, bite: 0.7,
-    col: { jersey: '#1f2a44', stripe: '#ffffff', helmet: '#1f2a44', skin: '#f2a65a' } },
-  { kind: 'kim', label: 'FINAL FINAL BOSS', name: 'KIM JONG UN', hp: 250, diff: 0.55, ramp: 0.6, react: 0.6, dmg: 1.5, speed: 0.85, hook: 0.35, feint: 1.5, combo: 1.8, parry: 0.28, smart: 0.6, bite: 0.5, nuke: true,   // holds the NUKE button: never let him block your punch with that hand
-    col: { jersey: '#2b2d33', stripe: '#2b2d33', helmet: '#16161c', skin: '#f1d2b4' } }
+  { kind: 'kim', label: 'FINAL BOSS', name: 'KIM JONG UN', hp: 170, diff: 0.3, ramp: 0.5, react: 0.45, dmg: 1.3, speed: 0.85, hook: 0.35, feint: 1.5, combo: 1.8, parry: 0.18, smart: 0.4, bite: 0.7,
+    col: { jersey: '#2b2d33', stripe: '#2b2d33', helmet: '#16161c', skin: '#f1d2b4' } },
+  { kind: 'trump', label: 'FINAL FINAL BOSS', name: 'TRUMP', hp: 250, diff: 0.55, ramp: 0.6, react: 0.6, dmg: 1.5, speed: 1.1, hook: 0.7, feint: 1, combo: 0.9, parry: 0.28, smart: 0.6, bite: 0.5, nuke: true,   // holds the NUKE button: never let him block your punch with that hand
+    col: { jersey: '#1f2a44', stripe: '#ffffff', helmet: '#1f2a44', skin: '#f2a65a' } }
 ];
 const TRUMP_LINES = ['SAD!', "YOU'RE FIRED!", 'TREMENDOUS!', 'HUGE!'];
 const FP_KEYS = { KeyQ: ['punch', 'L'], KeyE: ['punch', 'R'], KeyA: ['block', 'L'], KeyD: ['block', 'R'], KeyZ: ['fake', 'L'], KeyC: ['fake', 'R'] };
@@ -2831,7 +2831,7 @@ class IceBrawlFP extends IceBrawl {
     const { W, H } = this.v;
     this.state = 'winning'; this.endT = 3.5; this.cheer = 1; this.won = true; this.releaseAll();
     this.overTitle = 'Champion of the ice!';
-    this.overText = 'You knocked out your rival, Trump and Kim Jong Un. You win!';
+    this.overText = 'You knocked out your rival, Kim Jong Un and Trump. You win!';
     addText(this.texts, 'CHAMPION!', W / 2, H * 0.3, '#ffcf4a', 56); this.texts[this.texts.length - 1].life = this.texts[this.texts.length - 1].max = 3;
   }
   nuke() {
@@ -3427,9 +3427,9 @@ const GAMES = [
   {
     id: 'brawlfp', name: 'Ice Brawl: Face-Off', icon: '👊', overTitle: 'Down on the ice!', meterLabel: 'Balance',
     art: 'radial-gradient(circle at 50% 38%,#e63946 0 22%,transparent 23%),linear-gradient(180deg,#1b2440 0%,#2a3456 55%,#dcefff 55%,#f4faff 100%)',
-    desc: 'First-person hockey fight. Punch and block with each hand, knock out your rival, then Trump and Kim Jong Un.',
+    desc: 'First-person hockey fight. Punch and block with each hand, knock out your rival, then Kim Jong Un and Trump.',
     howTo: '<b>Q</b>/<b>E</b> punch, <b>Z</b>/<b>C</b> fake, hold <b>A</b>/<b>D</b> to block (touch: top fakes, middle punches, bottom blocks). Block just before a hit for a <b>PERFECT</b>. Fake, then hit the other side for a <b>FAKE-OUT</b>. <b>Scream</b> into the mic when they block to stun them.',
-    winOnly: true, goal: 'Knock out your rival, Trump and Kim Jong Un to win. No timer, no score.',   // win or lose, no survival score
+    winOnly: true, goal: 'Knock out your rival, Kim Jong Un and Trump to win. No timer, no score.',   // win or lose, no survival score
     theme: { hudBg: 'rgba(14,22,44,.62)', hudInk: '#eaf4ff', panelBg: 'linear-gradient(165deg,#ffffff,#dcecf8)', panelInk: '#13223f', panelEdge: '#2f6fe0', accent: '#2f6fe0', accentInk: '#ffffff' },
     create: v => new IceBrawlFP(v)
   },
