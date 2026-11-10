@@ -907,7 +907,8 @@ class JetEscape {
    The jet flies "into" the screen (towards -Z). Distance flown s = -z.
    Without WebGL the hub falls back to the 2D game.
    ===================================================================== */
-const J3 = { ZONE: 520, CITY: 260, CORR: 14, CEIL: 22, FLOOR: 1.3, GRAV: 26, FLAP: 12, FAR: 330 };
+const J3 = { ZONE: 520, CITY: 260, CORR: 14, CEIL: 22, FLOOR: 1.3, GRAV: 26, FLAP: 12, FAR: 330,
+  CALM: 47, NUKE_AT: 50, WIN_AT: 60 };   // regular missiles stop at CALM, the final nuke comes at NUKE_AT, you win at WIN_AT
 const COPPER3 = 0x5c9e86;
 const keys3 = new Set();                 // keys held right now (filled by the input wiring below)
 const pointer3 = { down: false, x: 0 };  // finger / mouse held down: steer towards it
@@ -1219,6 +1220,58 @@ function missile3() {
   return g;
 }
 
+function radTex3() {                  // the radiation trefoil
+  return canvasTex3('rad', 128, 128, x => drawTrefoil(x, 64, 64, 62));
+}
+function drawTrefoil(x, cx, cy, r) {
+  x.fillStyle = '#f2c230'; x.beginPath(); x.arc(cx, cy, r, 0, TAU); x.fill();
+  x.fillStyle = '#141414';
+  for (let k = 0; k < 3; k++) {
+    const a = -Math.PI / 2 + k * TAU / 3;
+    x.beginPath(); x.moveTo(cx, cy); x.arc(cx, cy, r * 0.86, a - Math.PI / 6, a + Math.PI / 6); x.closePath(); x.fill();
+  }
+  x.fillStyle = '#f2c230'; x.beginPath(); x.arc(cx, cy, r * 0.26, 0, TAU); x.fill();
+  x.fillStyle = '#141414'; x.beginPath(); x.arc(cx, cy, r * 0.16, 0, TAU); x.fill();
+}
+function nuke3() {                     // the final boss: a big, slow, spinning nuke
+  const G = G3, T = G.T, g = new T.Group();
+  if (!G.nm) G.nm = {
+    body: G.mat(0x4d5a2a), band: G.mat(0xf2c230), black: G.mat(0x1e1e1e),
+    flame: new T.MeshBasicMaterial({ color: 0xffb347 }),
+    flare: new T.MeshBasicMaterial({ color: 0xfff0c0, transparent: true, opacity: 0.95, fog: false, depthWrite: false }),
+  };
+  const M = G.nm;
+  const add = (geo, mat, x, y, z, sx, sy, sz, rx = 0, ry = 0) => {
+    const m = new T.Mesh(geo, mat); m.position.set(x, y, z); m.scale.set(sx, sy, sz); m.rotation.set(rx, ry, 0); g.add(m); return m;
+  };
+  add(G.geo.cyl, M.body, 0, 0, 0, 1.6, 7, 1.6, Math.PI / 2);
+  add(G.geo.cone, M.body, 0, 0, 4.8, 1.6, 2.6, 1.6, Math.PI / 2);          // nose points at you (+Z)
+  for (const z of [2.4, -1.4]) add(G.geo.cyl, M.band, 0, 0, z, 1.66, 0.55, 1.66, Math.PI / 2);
+  add(G.geo.cyl, M.black, 0, 0, 0.5, 1.66, 0.25, 1.66, Math.PI / 2);
+  add(G.geo.box, M.black, 0, 0, -3.1, 3.2, 0.16, 1.6); add(G.geo.box, M.black, 0, 0, -3.1, 0.16, 3.2, 1.6);
+  const rt = radTex3();
+  for (const sd of [-1, 1]) add(G.geo.plane, rt.mat, sd * 0.84, 0, 0.6, 1.3, 1.3, 1, 0, sd * Math.PI / 2);
+  add(G.geo.plane, rt.mat, 0, 0.84, 0.6, 1.3, 1.3, 1, -Math.PI / 2);
+  add(G.geo.cone, M.flame, 0, 0, -4.2, 1.2, 2.4, 1.2, -Math.PI / 2);
+  add(G.geo.sphere, M.flare, 0, 0, -4.4, 2.6, 2.6, 3);
+  g.userData.light = add(G.geo.sphere, new T.MeshBasicMaterial({ color: 0xff2020, fog: false }), 0, 0, 6.2, 0.6, 0.6, 0.6);
+  g.userData.halo = add(G.geo.sphere, new T.MeshBasicMaterial({ color: 0xffb040, transparent: true, opacity: 0.35, fog: false, depthWrite: false }), 0, 0, 2, 5, 5, 5);   // boss glow
+  g.scale.setScalar(2.4);
+  return g;
+}
+function jamTex3() {                   // static noise for the jamming fields
+  return canvasTex3('jam', 128, 128, (x, w, h) => {
+    x.fillStyle = 'rgba(140,50,220,.55)'; x.fillRect(0, 0, w, h);   // solid base, so the field stays visible from far away
+    for (let i = 0; i < 1800; i++) {
+      const r = Math.random();
+      x.fillStyle = r < 0.25 ? 'rgba(255,255,255,.9)' : r < 0.6 ? 'rgba(220,120,255,.8)' : 'rgba(120,40,200,.5)';
+      x.fillRect((Math.random() * w) | 0, (Math.random() * h) | 0, 2, 2);
+    }
+    x.fillStyle = 'rgba(255,255,255,.35)';
+    for (let y = 0; y < h; y += 8) x.fillRect(0, y, w, 1);   // scan lines
+  }, { repeat: true });
+}
+
 /* ---------- the cities in 3D (positions are "d" units into the zone; x < 0 left, x > 0 right) ---------- */
 function s3Linkoping(g, s0) {
   const Z = d => -(s0 + d), walls = [0xb23428, 0xe2b45c, 0xbe4838, 0x829664, 0xecd6aa, 0xb23428];
@@ -1381,6 +1434,9 @@ class JetEscape3D extends JetEscape {
     this.zone = -1; this.border = -1; this.banner = null; this.texts = [];
     this.px = 0; this.py = 9; this.pz = 150; this.vx = 0; this.vy = 0; this.speed = 0;
     this.missiles = []; this.spawnT = 1.4; this.flame = 0; this.jetScreen = null;
+    this.jams = []; this.jamPlan = [12 + rand(-2, 2), 27 + rand(-2, 2), 40 + rand(-2, 2)]; this.jamI = 0;   // three jammed zones per run
+    this.nuke = null; this.nukeDone = false; this.won = false; this.cause = null; this.overTitle = undefined;
+    this.alarm = 0; this.flashT = 0; this.flashCol = '#fff'; this.shake3 = 0;
     this.build();
   }
   leave() { G3.el.style.display = 'none'; }
@@ -1474,7 +1530,15 @@ class JetEscape3D extends JetEscape {
     else if (Math.random() < 0.6) mk(px, py);                                                         // straight at you
     else mk(px + rand(-5, 5), py + rand(-4, 4));
   }
-  crash() {
+  get overNote() {
+    if (this.won) return 'You dodged the final nuke and made it across Sweden to Norway!';
+    const base = Object.getOwnPropertyDescriptor(JetEscape.prototype, 'overNote').get.call(this);
+    return (this.cause === 'nuke' ? 'The final nuke got you. ' : this.cause === 'jam' ? 'You flew into a jammed zone. ' : '') + base;
+  }
+  crash(cause = 'missile') {
+    this.cause = cause;
+    this.overTitle = { missile: 'Shot down!', ground: 'Crashed!', jam: 'Jammed!', nuke: 'Nuked!' }[cause];
+    if (cause === 'nuke') { this.flashT = 0.9; this.flashCol = '#ffd08a'; this.shake3 = 1.2; this.alarm = 0; }
     this.state = 'dying'; this.endT = 1.4; this.jet.visible = false; this.shadow.visible = false;
     for (const b of this.boom) {
       const a = rand(0, TAU), e = rand(-1, 1), sp = rand(4, 20);
@@ -1483,7 +1547,7 @@ class JetEscape3D extends JetEscape {
       b.life = b.max = rand(0.5, 1.2);
     }
     const p = this.jetScreen || { x: this.v.W / 2, y: this.v.H / 2 };
-    addText(this.texts, 'POOF!', p.x + 30, p.y - 40, '#ffcf4a', 40);
+    addText(this.texts, cause === 'jam' ? 'ZZZT!' : cause === 'nuke' ? 'KABOOM!' : 'POOF!', p.x + 30, p.y - 40, cause === 'jam' ? '#d98cff' : '#ffcf4a', cause === 'nuke' ? 56 : 40);
   }
   fly(dt) {
     const up = key3('KeyW', 'ArrowUp'), dn = key3('KeyS', 'ArrowDown'), lf = key3('KeyA', 'ArrowLeft'), rt = key3('KeyD', 'ArrowRight');
@@ -1498,12 +1562,12 @@ class JetEscape3D extends JetEscape {
     this.vx += (target - this.vx) * Math.min(1, dt * 6);
     this.px += this.vx * dt;
     if (Math.abs(this.px) > J3.CORR) { this.px = Math.sign(this.px) * J3.CORR; this.vx = 0; }
-    if (this.py < J3.FLOOR) this.crash();
+    if (this.py < J3.FLOOR) this.crash('ground');
   }
   update(dt) {
     this.t += dt;
     const running = this.state === 'running', d = clamp(this.time / 70, 0, 1);
-    const pace = this.state === 'idle' ? 0.45 : (running ? 1 : 0.25);
+    const pace = this.state === 'idle' ? 0.45 : (running || this.state === 'won' ? 1 : 0.25);
     this.speed = (45 + 35 * d) * pace;
     this.pz -= this.speed * dt;
     this.flame = Math.max(0, this.flame - dt * 3);
@@ -1515,7 +1579,12 @@ class JetEscape3D extends JetEscape {
       this.time += dt;
       this.fly(dt);
       this.spawnT -= dt;
-      if (this.spawnT <= 0 && this.state === 'running') { this.spawnT = (1.5 - 0.8 * d) * rand(0.8, 1.2); this.spawn(d); }
+      // regular missiles, but not while a jammed zone is in view or once the finale has begun
+      if (this.spawnT <= 0 && this.state === 'running' && this.time < J3.CALM && !this.jamAhead(320)) { this.spawnT = (1.5 - 0.8 * d) * rand(0.8, 1.2); this.spawn(d); }
+      if (this.jamI < this.jamPlan.length && this.time >= this.jamPlan[this.jamI]) this.addJam(this.jamI++);
+      if (!this.nuke && !this.nukeDone && this.time >= J3.NUKE_AT) this.launchNuke();
+      if (this.state === 'running') this.checkJam();
+      if (this.state === 'running' && this.time >= J3.WIN_AT) this.win();
     }
     const js = this.jetScreen || { x: 0, y: 0 };
     this.trackRoute(-this.pz, running, J3.ZONE, 8, js.x + 60, js.y - 50, dt);
@@ -1537,6 +1606,9 @@ class JetEscape3D extends JetEscape {
       if (rel > 30) { this.scene.remove(m.g); this.scene.remove(m.sh); m.dead = true; }
     }
     this.missiles = this.missiles.filter(m => !m.dead);
+    this.updateNuke(dt);
+    this.updateJams();
+    this.alarm = Math.max(0, this.alarm - dt); this.flashT = Math.max(0, this.flashT - dt); this.shake3 = Math.max(0, this.shake3 - dt * 1.5);
     for (const p of this.puffs) {
       if (p.life <= 0) continue;
       p.life -= dt;
@@ -1553,6 +1625,7 @@ class JetEscape3D extends JetEscape {
     }
     tickTexts(this.texts, dt);
     if (this.state === 'dying') { this.endT -= dt; if (this.endT <= 0) this.state = 'done'; }
+    if (this.state === 'won') { this.endT -= dt; this.vy = 6; this.py = Math.min(J3.CEIL + 8, this.py + 6 * dt); if (this.endT <= 0) this.state = 'done'; }
     this.stream(false);
     this.place(dt);
   }
@@ -1568,6 +1641,7 @@ class JetEscape3D extends JetEscape {
     c.position.x += (this.px * 0.72 - c.position.x) * k;
     c.position.y += (this.py + 3.4 - c.position.y) * k;
     c.position.z = this.pz + 10.5;
+    if (this.shake3 > 0) { c.position.x += rand(-1, 1) * this.shake3 * 0.7; c.position.y += rand(-1, 1) * this.shake3 * 0.5; }
     c.lookAt(this.px * 0.9, this.py + 0.6, this.pz - 16);
     // the sky shifts from day to sunset to night, like the 2D game
     const Tm = this.time, K = [[94, 196, 255], [200, 236, 255], [255, 128, 92], [255, 212, 130], [18, 22, 66], [66, 58, 138]];
@@ -1593,6 +1667,136 @@ class JetEscape3D extends JetEscape {
     G3.win.emissiveIntensity = night * 1.1;
     this.ground.position.set(this.px, -0.5, this.pz - 600);
   }
+  win() {
+    this.state = 'won'; this.won = true; this.endT = 2.4; this.overTitle = 'Mission complete!';
+    this.banner = { title: 'Mission complete!', sub: 'You survived the final nuke', t: 2.4, max: 2.4 };
+    addText(this.texts, 'VICTORY!', this.v.W / 2, this.v.H * 0.42, '#ffd25a', 52);
+  }
+  // ----- the final boss: a nuke that homes in on you until the last moment -----
+  launchNuke() {
+    const vn = 34, T0 = 3.4, dist = (vn + this.speed) * T0;
+    const g = nuke3(); g.position.set(this.px, this.py, this.pz - dist); this.scene.add(g);
+    const sh = new G3.T.Mesh(G3.geo.plane, this.shadow.material);
+    sh.rotation.x = -Math.PI / 2; sh.scale.setScalar(9); sh.position.set(this.px, 0.1, g.position.z); this.scene.add(sh);
+    this.nuke = { g, sh, x: this.px, y: this.py, v: vn, rel: -dist, st: 0, passed: false };
+    this.alarm = T0 + 0.4;
+  }
+  updateNuke(dt) {
+    const n = this.nuke;
+    if (!n) return;
+    n.g.position.z += n.v * dt;
+    const rel = n.g.position.z - this.pz, tti = -rel / Math.max(1, n.v + this.speed);
+    if (!n.passed && tti > 0.85 && this.state === 'running') {     // it follows you... then locks on, 0.85 s before impact
+      const k = 9 * dt;
+      n.x += clamp(this.px - n.x, -k, k); n.y += clamp(this.py - n.y, -k * 0.8, k * 0.8);
+    }
+    n.g.position.x = n.x; n.g.position.y = n.y + Math.sin(this.t * 7) * 0.15; n.g.rotation.z += dt * 2.2;
+    n.sh.position.set(n.x, 0.1, n.g.position.z);
+    n.g.userData.light.material.color.setHex(Math.floor(this.t * 6) % 2 ? 0xff2020 : 0x400000);
+    const hs = 5 + Math.sin(this.t * 10) * 0.8; n.g.userData.halo.scale.set(hs, hs, hs); n.g.userData.halo.material.opacity = 0.28 + 0.12 * Math.sin(this.t * 10);
+    n.st -= dt;
+    if (n.st <= 0) { n.st = 0.025; this.puff(n.x + rand(-0.8, 0.8), n.y + rand(-0.8, 0.8), n.g.position.z - 9, 2.6, 1.3); }
+    if (!n.passed && n.rel < 0 && rel >= 0) {
+      n.passed = true;
+      if (this.state === 'running') {
+        if (Math.hypot(n.x - this.px, n.y - this.py) < 3.4) this.crash('nuke');   // bigger blast than a normal missile
+        else {
+          this.nukeDone = true; this.alarm = 0; this.flashT = 0.6; this.flashCol = '#ffffff'; this.shake3 = 0.9;
+          addText(this.texts, 'NUKE DODGED!', this.v.W / 2, this.v.H * 0.36, '#7dffb0', 46);
+        }
+      }
+    }
+    n.rel = rel;
+    if (rel > 40) { this.scene.remove(n.g); this.scene.remove(n.sh); this.nuke = null; this.nukeDone = true; }
+  }
+  // ----- enemy jamming: no-go fields that block part of the flight path -----
+  addJam(k) {
+    const G = G3, T = G.T, len = 46, z0 = this.pz - 300, C = J3.CORR + 1.5, TOP = J3.CEIL + 4, boxes = [];
+    const kind = ['half', 'band', 'window'][k % 3];                 // they get harder: half, then top or bottom, then a window
+    if (kind === 'half') boxes.push(Math.random() < 0.5 ? [-C, 0.5, 0, TOP] : [-0.5, C, 0, TOP]);
+    else if (kind === 'band') boxes.push(Math.random() < 0.5 ? [-C, C, 11, TOP] : [-C, C, 0, 9.5]);
+    else {
+      const wx = rand(-7, 7), wy = rand(7, 15), hw = 5, hh = 4;    // a wall with one window to fly through
+      boxes.push([-C, wx - hw, 0, TOP], [wx + hw, C, 0, TOP], [wx - hw, wx + hw, 0, wy - hh], [wx - hw, wx + hw, wy + hh, TOP]);
+    }
+    if (!G.jamMat) {
+      const t = jamTex3(); t.t.repeat.set(3, 3);
+      G.jamMat = new T.MeshBasicMaterial({ color: 0xd080ff, map: t.t, transparent: true, opacity: 0.5, side: T.DoubleSide, depthWrite: false, fog: false });
+      G.jamLine = new T.LineBasicMaterial({ color: 0xff5cf0, fog: false });
+      G.jamEdges = new T.EdgesGeometry(G.geo.box);
+      G.jamBlink = new T.MeshBasicMaterial({ color: 0xff2020 });
+    }
+    const g = new T.Group();
+    for (const [x0, x1, y0, y1] of boxes) {
+      const m = new T.Mesh(G.geo.box, G.jamMat); m.position.set((x0 + x1) / 2, (y0 + y1) / 2, z0 - len / 2); m.scale.set(x1 - x0, y1 - y0, len); g.add(m);
+      const e = new T.LineSegments(G.jamEdges, G.jamLine); e.position.copy(m.position); e.scale.copy(m.scale); g.add(e);
+    }
+    for (const sd of [-1, 1]) {                                       // jammer towers at the entrance
+      m3(g, 'cyl', 0x5a5f66, sd * 19, 6, z0 + 3, 0.9, 12, 0.9);
+      m3(g, 'sphere', 0xd8dde3, sd * 19, 12.6, z0 + 3, 3.4, 1.4, 3.4);
+      m3(g, 'sphere', G.jamBlink, sd * 19, 13.8, z0 + 3, 0.7, 0.7, 0.7);
+    }
+    this.scene.add(g);
+    this.jams.push({ g, z0, len, boxes });
+  }
+  jamAhead(dist) { return this.jams.some(j => this.pz - j.z0 > -j.len - 10 && this.pz - j.z0 < dist); }
+  checkJam() {
+    for (const j of this.jams) {
+      if (this.pz > j.z0 + 1 || this.pz < j.z0 - j.len - 1) continue;
+      for (const [x0, x1, y0, y1] of j.boxes) {
+        if (this.px > x0 - 0.9 && this.px < x1 + 0.9 && this.py > y0 - 0.6 && this.py < y1 + 0.6) { this.crash('jam'); return; }
+      }
+    }
+  }
+  updateJams() {
+    if (!this.jams.length) return;
+    const G = G3;
+    G.jamMat.map.offset.set(Math.random(), Math.random());          // flickering static
+    G.jamMat.opacity = 0.44 + Math.random() * 0.12;
+    G.jamBlink.color.setHex(Math.floor(this.t * 5) % 2 ? 0xff2020 : 0x501010);
+    this.jams = this.jams.filter(j => { if (this.pz < j.z0 - j.len - 40) { this.scene.remove(j.g); return false; } return true; });
+  }
+  // the 2D layer: jamming warning and static, the nuke alarm, and flashes
+  drawFx(ctx) {
+    const W = this.v.W, H = this.v.H;
+    let near = Infinity;
+    for (const j of this.jams) { const d = this.pz - j.z0; if (d > -j.len) near = Math.min(near, Math.max(0, d)); }
+    if (this.state === 'running' && near < 280) {
+      const txt = near < 70 ? 'JAMMED ZONE: FIND THE GAP!' : '⚡ JAMMING ZONE AHEAD';
+      ctx.save();
+      ctx.font = `900 17px ${FONT}`;
+      const w = ctx.measureText(txt).width + 34;
+      ctx.globalAlpha = 0.75 + 0.25 * Math.sin(this.t * 12);
+      ctx.fillStyle = 'rgba(70,10,110,.78)'; rr(ctx, W / 2 - w / 2, 114, w, 34, 17); ctx.fill();
+      ctx.strokeStyle = '#ff5cf0'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(txt, W / 2, 131);
+      ctx.restore();
+      if (near < 50) {                                                 // the jammer scrambles your screen as you get close
+        const n = Math.floor(90 * (1 - near / 50));
+        for (let i = 0; i < n; i++) {
+          ctx.fillStyle = Math.random() < 0.5 ? 'rgba(255,255,255,.35)' : 'rgba(200,100,255,.35)';
+          ctx.fillRect(Math.random() * W, Math.random() * H, 2 + Math.random() * 30, 2);
+        }
+      }
+    }
+    if (this.alarm > 0 && this.state === 'running') {
+      const on = Math.floor(this.t * 5) % 2 === 0, y = H * 0.27;
+      ctx.save();
+      ctx.globalAlpha = on ? 1 : 0.55;
+      ctx.font = `900 34px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      const w = ctx.measureText('NUKE INCOMING').width;
+      ctx.lineWidth = 7; ctx.strokeStyle = '#2a0000'; ctx.strokeText('NUKE INCOMING', W / 2, y);
+      ctx.fillStyle = '#ff3b3b'; ctx.fillText('NUKE INCOMING', W / 2, y);
+      drawTrefoil(ctx, W / 2 - w / 2 - 30, y, 17); drawTrefoil(ctx, W / 2 + w / 2 + 30, y, 17);
+      ctx.globalAlpha = 1; ctx.font = `800 16px ${FONT}`; ctx.fillStyle = '#fff';
+      ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.strokeText('It follows you. Dodge at the last second!', W / 2, y + 32);
+      ctx.fillText('It follows you. Dodge at the last second!', W / 2, y + 32);
+      ctx.restore();
+    }
+    if (this.flashT > 0) {
+      ctx.save(); ctx.globalAlpha = Math.min(1, this.flashT / 0.6) * 0.85; ctx.fillStyle = this.flashCol; ctx.fillRect(0, 0, W, H); ctx.restore();
+    }
+  }
   proj(x, y, z) {
     const v = this._v || (this._v = new G3.T.Vector3());
     v.set(x, y, z).project(this.cam);
@@ -1606,6 +1810,7 @@ class JetEscape3D extends JetEscape {
     r.render(this.scene, this.cam);
     this.jetScreen = this.proj(this.px, this.py, this.pz);
     ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height); ctx.restore();
+    this.drawFx(ctx);
     drawTexts(ctx, this.texts);
     this.drawHint(ctx);
     this.drawLocation(ctx);
@@ -2818,7 +3023,7 @@ const GAMES = [
     id: 'jet', name: 'Jet Escape', icon: '✈️', overTitle: 'Shot down!',
     art: 'linear-gradient(180deg,#5ec4ff 0%,#bfe9ff 55%,#ffd08a 100%)',
     desc: 'Fly your fighter jet in 3D across Sweden, from Linköping to the Norwegian border, and dodge the incoming missiles.',
-    howTo: 'Fly with W A S D or the arrow keys: W climbs, S dives, A and D steer. Space or a tap also boosts you up. Dodge the missiles coming at you (their shadows on the ground help) and don\'t touch the ground. The road signs tell you which city you are flying over.',
+    howTo: 'Fly with W A S D or the arrow keys: W climbs, S dives, A and D steer. Space or a tap also boosts you up. Dodge the missiles coming at you (their shadows on the ground help), steer round the purple jammed zones and don\'t touch the ground. Survive 60 seconds to win, but first you must dodge the final nuke. It follows you, so move at the last second!',
     targetTime: 60,
     theme: { hudBg: 'rgba(8,37,77,.5)', hudInk: '#ffffff', panelBg: 'linear-gradient(165deg,#f2faff,#c6e6ff)', panelInk: '#0b2a4a', panelEdge: '#ffffff', accent: '#ff7a45', accentInk: '#ffffff' },
     create: v => (gl3() ? new JetEscape3D(v) : new JetEscape(v))   // 3D when WebGL works, else the 2D version
