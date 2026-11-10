@@ -1022,11 +1022,11 @@ const FP = {
   PUNCH_HIT: 0.1, PUNCH_LEN: 0.26, PUNCH_RECOVER: 0.12, PUNCH_COST: 18,
   STAM_REGEN: 20, BLOCK_DRAIN: 7,
   PERFECT: 0.12, GOOD: 0.4, WEAK: 1.2,     // how long a block has been held: perfect → good → weak → guard break
-  HP: 150, REGEN: 0.6, KO_BONUS: 10, KO_HEAL: 30,
+  HP: 150, REGEN: 0.6, KO_BONUS: 10,
   DMG: { hit: 7, glance: 4, counter: 13, stuff: 10 },
   ATK: {
-    jab:   { wind: [0.62, 0.42], depth: 0.6,  dmg: 12, color: '#ffd166', name: 'JAB!' },
-    hook:  { wind: [1.0, 0.7],   depth: 1,    dmg: 26, color: '#ff3b3b', name: 'HOOK!' },
+    jab:   { wind: [0.62, 0.42], depth: 0.6,  dmg: 8,  color: '#ffd166', name: 'JAB!' },
+    hook:  { wind: [1.0, 0.7],   depth: 1,    dmg: 17, color: '#ff3b3b', name: 'HOOK!' },
     feint: { wind: [0.9, 0.66],  depth: 0.55, dmg: 0,  color: '#ff3b3b' }   // looks like a hook but the arm stops short
   }
 };
@@ -1160,7 +1160,7 @@ class IceBrawlFP extends IceBrawl {
   koRival() {
     const E = this.e, { W, H } = this.v;
     E.hp = 0; E.mode = 'ko'; E.modeT = 2.6; E.combo = 0;
-    this.kos++; this.bonus += FP.KO_BONUS; this.balance = Math.min(FP.HP, this.balance + FP.KO_HEAL);
+    this.kos++; this.bonus += FP.KO_BONUS; this.balance = FP.HP;   // full health for the next opponent
     this.cheer = 1; this.shake = 1;
     addText(this.texts, 'KNOCKOUT!', W / 2, H * 0.3, '#ffcf4a', 48);
     addText(this.texts, `+${FP.KO_BONUS}s`, W / 2, H * 0.42, '#7dffb0', 30);
