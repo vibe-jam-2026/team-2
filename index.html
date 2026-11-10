@@ -1648,7 +1648,7 @@ class JetEscape3D extends JetEscape {
       b.life = b.max = rand(0.5, 1.2);
     }
     const p = this.jetScreen || { x: this.v.W / 2, y: this.v.H / 2 };
-    addText(this.texts, cause === 'jam' ? 'ZZZT!' : cause === 'nuke' ? 'KABOOM!' : cause === 'self' ? 'OWN GOAL!' : 'POOF!', p.x + 30, p.y - 40, cause === 'jam' ? '#d98cff' : '#ffcf4a', cause === 'nuke' ? 56 : 40);
+    addText(this.texts, cause === 'jam' ? 'ZZZT!' : cause === 'nuke' ? 'KABOOM!' : cause === 'self' ? 'BOOMERANG!' : 'POOF!', p.x + 30, p.y - 40, cause === 'jam' ? '#d98cff' : '#ffcf4a', cause === 'nuke' ? 56 : 40);
   }
   fly(dt) {
     const up = key3('KeyW', 'ArrowUp'), dn = key3('KeyS', 'ArrowDown'), lf = key3('KeyA', 'ArrowLeft'), rt = key3('KeyD', 'ArrowRight');
@@ -1785,41 +1785,45 @@ class JetEscape3D extends JetEscape {
     this.banner = { title: 'Mission complete!', sub: 'You survived the final nuke', t: 2.4, max: 2.4 };
     addText(this.texts, 'VICTORY!', this.v.W / 2, this.v.H * 0.42, '#ffd25a', 52);
   }
-  // ----- easter egg: Q fires a missile that loops round and comes back for you -----
+  // ----- easter egg: Q fires a missile that flies ahead, makes a flat U-turn and comes back for you -----
+  // Its path is worked out relative to the jet (m.r), so it stays on screen the whole time.
   fireSelf() {
     const T = G3.T, g = missile3();
-    g.scale.setScalar(1.3);
-    const p = new T.Vector3(this.px, this.py - 0.5, this.pz - 3);
-    const v = new T.Vector3(rand(-0.15, 0.15), 0.3, -1).normalize().multiplyScalar(this.speed + 50);   // forward and a little up
-    g.position.copy(p); this.scene.add(g);
-    this.selfM = { g, p, v, t: 0, st: 0, turned: false };
+    g.scale.setScalar(1.3); this.scene.add(g);
+    this.selfM = { g, r: new T.Vector3(0, -0.4, -3), vel: new T.Vector3(0, 0, -45), phase: 0, ang: 0, cx: 0, cz: 0, side: this.px > 0 ? -1 : 1, st: 0, t: 0 };
+    this.placeSelf();
     sfx3.launch();
-    if (this.jetScreen) addText(this.texts, 'FIRE!', this.jetScreen.x + 30, this.jetScreen.y - 60, '#ffcf4a', 26);
+    if (this.jetScreen) addText(this.texts, 'FIRE!', this.jetScreen.x - 70, this.jetScreen.y + 55, '#ffcf4a', 26);   // below the jet, out of the missile's way
+  }
+  placeSelf() {
+    const m = this.selfM, w = new G3.T.Vector3(this.px + m.r.x, this.py + m.r.y, this.pz + m.r.z);
+    m.g.position.copy(w); m.g.lookAt(w.add(m.vel));                // the nose points the way it moves on screen
   }
   updateSelf(dt) {
     const m = this.selfM;
-    if (!m) return;
-    const T = G3.T, target = new T.Vector3(this.px, this.py, this.pz);
+    if (!m || dt <= 0) return;
+    const R = 6, prev = m.r.clone();
     m.t += dt;
-    if (m.t > 0.35) {                                             // it swings round in a loop and heads back
-      if (!m.turned) {
-        m.turned = true; sfx3.uhoh();
-        if (this.jetScreen) addText(this.texts, 'UH-OH...', this.jetScreen.x, this.jetScreen.y - 80, '#ff9de0', 28);
+    if (m.phase === 0) {                                           // 1. straight ahead, rising just above the jet
+      m.r.z -= 45 * dt; m.r.y += (1.4 - m.r.y) * Math.min(1, dt * 4);
+      if (m.r.z <= -24) {
+        m.phase = 1; m.ang = 0; m.cx = m.r.x + m.side * R; m.cz = m.r.z;
+        sfx3.uhoh();
+        if (this.jetScreen) addText(this.texts, 'UH-OH...', this.jetScreen.x + 60, this.jetScreen.y + 60, '#ff9de0', 28);
       }
-      const dir = m.v.clone().normalize(), want = target.clone().sub(m.p).normalize();
-      const ang = dir.angleTo(want), turn = Math.min(ang, (3.2 + m.t * 3) * dt);
-      if (ang > 1e-4) {
-        let axis = dir.clone().cross(want);
-        if (axis.lengthSq() < 1e-6) axis = new T.Vector3(1, 0, 0);   // straight away from you: loop over the top
-        dir.applyAxisAngle(axis.normalize(), turn);
-      }
-      m.v.copy(dir.multiplyScalar(Math.max(m.v.length(), 80 + m.t * 25)));
+    } else if (m.phase === 1) {                                    // 2. a flat 180 degree turn to the side with more room
+      m.ang = Math.min(Math.PI, m.ang + dt * 32 / R);
+      m.r.x = m.cx - m.side * R * Math.cos(m.ang); m.r.z = m.cz - R * Math.sin(m.ang);
+      if (m.ang >= Math.PI) m.phase = 2;
+    } else {                                                       // 3. straight back at the jet
+      const back = m.r.clone().negate();
+      m.r.addScaledVector(back.normalize(), 55 * dt);
     }
-    m.p.addScaledVector(m.v, dt);
-    m.g.position.copy(m.p); m.g.lookAt(m.p.clone().add(m.v));     // the model's nose points along its flight
+    m.vel.copy(m.r).sub(prev).divideScalar(dt);
+    this.placeSelf();
     m.st -= dt;
-    if (m.st <= 0) { m.st = 0.025; this.puff(m.p.x, m.p.y, m.p.z, 0.9, 0.9); }
-    if (this.state === 'running' && m.p.distanceTo(target) < 2.2) { this.scene.remove(m.g); this.selfM = null; this.crash('self'); return; }
+    if (m.st <= 0) { m.st = 0.025; this.puff(m.g.position.x, m.g.position.y, m.g.position.z, 0.8, 0.7); }
+    if (m.phase === 2 && this.state === 'running' && m.r.length() < 2.2) { this.scene.remove(m.g); this.selfM = null; this.crash('self'); return; }
     if (this.state !== 'running' && m.t > 3) { this.scene.remove(m.g); this.selfM = null; }
   }
   // ----- the final boss: a nuke that homes in on you until the last moment -----
