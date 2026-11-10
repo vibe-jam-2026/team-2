@@ -10,13 +10,20 @@
   Two hockey-helmeted squirrels on two islands slap exploding pucks at
   each other. Whatever you do: DO NOT touch the red button.
 
+  Sound effects are synthesized in the browser (Web Audio API); M mutes.
+
   Modes: 2 players on one keyboard (hot-seat), or play Red against a
   computer-controlled Blue on Easy, Normal or Hard (see AI_LEVELS).
 
-  FINAL BOSS: from round 8 the Seagull Striker (a seagull built like a
+  FINAL BOSS: from round 5 the Seagull Striker (a seagull built like a
   jet fighter) flies over at the start of every round and drops one blob of
   explosive poop on each island. A puck that hits a poop sets off a giant
-  explosion. A player whose own island is wiped out loses.
+  explosion with a big knockback. A squirrel knocked into a poop sets it off
+  too. A player whose own island is wiped out loses.
+
+  FINAL FINAL BOSS: beat the computer and the Seagull Striker drops a giant
+  Mega Squirrel onto its island (or onto a raft if the island is gone).
+  The jet stops dropping poop from then on. Beat the Mega Squirrel to win.
 
   Single self-contained file: HTML + CSS + JavaScript (Canvas API).
   No external libraries or assets. Open it in any modern desktop browser.
@@ -85,11 +92,11 @@ const CONFIG = {
 
   // The red button (sits on a post in the water between the islands)
   BUTTON_X: 640,
-  BUTTON_Y: 520,            // y of the top of the button housing (dome sits on top)
+  BUTTON_Y: 340,            // y of the top of the button housing (raised high so shots must arc over it)
   BUTTON_RADIUS: 18,
 
   // Final boss: the Seagull Striker
-  BOSS_AFTER_ROUNDS: 7,     // the boss first appears at the start of round BOSS_AFTER_ROUNDS + 1 (round 8)
+  BOSS_AFTER_ROUNDS: 4,     // the boss first appears at the start of round BOSS_AFTER_ROUNDS + 1 (round 5)
   BOSS_EVERY_ROUND: true,   // once it has arrived, it bombs again at the start of every round
   BOSS_SPEED: 520,          // flying speed (px/s)
   POOP_RADIUS: 14,          // hit radius of an explosive poop
@@ -97,6 +104,25 @@ const CONFIG = {
   POOP_DAMAGE_RADIUS: 130,
   POOP_MAX_DAMAGE: 50,
   ISLAND_GONE_FRACTION: 0.1, // an island is "destroyed" when less than 10% of it is left
+
+  // Final final boss: the Mega Squirrel (vs Computer only, after beating the AI)
+  MEGA_HEALTH: 200,
+  MEGA_SCALE: 2,            // size compared to a normal squirrel
+  MEGA_DAMAGE_MULT: 1.3,    // its pucks hit harder...
+  MEGA_CRATER_MULT: 1.3,    // ...and dig bigger holes
+  MEGA_RAFT_HALF_WIDTH: 60, // raft used when the AI's island is (nearly) gone
+
+  // Knockback: explosions push squirrels away from the blast centre
+  SQUIRREL_LENGTH: 32,      // px counted as "one squirrel"
+  KNOCKBACK_MIN: 1,         // squirrels pushed at the edge of the blast
+  KNOCKBACK_MAX: 3,         // squirrels pushed by a direct hit
+  KNOCKBACK_SPEED: 240,     // px/s while being pushed
+  POOP_KNOCKBACK_MIN: 2,    // poop explosions push much harder:
+  POOP_KNOCKBACK_MAX: 6,    //   2 squirrels at the edge, 6 right next to it
+
+  // Sound (all effects are synthesized with the Web Audio API; press M to mute)
+  SOUND_VOLUME: 0.5,        // master volume, 0..1
+  HEAL_FOR_MEGA: true,      // the human gets full health back when the Mega Squirrel arrives
 };
 
 /*
@@ -109,7 +135,7 @@ const CONFIG = {
  *   thinkTime: pause (s) before it starts adjusting its aim
  */
 const AI_LEVELS = {
-  easy:   { label: 'Easy',   windAwareness: 0,    angleError: 6,   powerError: 6,   maxWalk: 30, thinkTime: 1.0 },
+  easy:   { label: 'Easy',   windAwareness: 0.3,  angleError: 6,   powerError: 6,   maxWalk: 30, thinkTime: 1.0 },
   normal: { label: 'Normal', windAwareness: 0.7,  angleError: 2.5, powerError: 2.5, maxWalk: 60, thinkTime: 0.8 },
   hard:   { label: 'Hard',   windAwareness: 1,    angleError: 1.3, powerError: 1.3, maxWalk: 80, thinkTime: 0.6 },
 };
@@ -118,7 +144,8 @@ const W = CONFIG.WIDTH;
 const H = CONFIG.HEIGHT;
 const TAU = Math.PI * 2;
 
-// Size of the squirrel hit box (feet are at p.y; the box goes up from there)
+// Size of a normal squirrel's hit box (feet are at p.y; the box goes up from there).
+// Each player stores its own size (p.halfW, p.height, p.scale) so the Mega Squirrel can be bigger.
 const PLAYER_HALF_W = 11;
 const PLAYER_HEIGHT = 38;
 const PUCK_RADIUS = 5;
@@ -368,6 +395,9 @@ let floatTexts = [];      // "-32" damage pop-ups
 let banner = null;        // big centred message, e.g. "Blue's turn"
 let clouds = [];
 let boss = null;          // the Seagull Striker while it is on screen
+let megaStage = false;    // true once the final final boss (Mega Squirrel) has been called in
+let megaOnRaft = false;   // the Mega Squirrel stands on a raft because its island was gone
+let megaDelivery = null;  // the jet carrying the Mega Squirrel in
 let poops = [];           // explosive poop: { x, y, vy, grounded } (falling or resting on an island)
 const islandBaseArea = [0, 0];   // ground pixels above water per island at the start of a game
 
@@ -390,7 +420,7 @@ const ai = { wait: 0, dir: 1, walkLeft: 0, targetAim: 45, targetPower: 50, aimed
 
 const active = () => players[current];
 const isAI = p => gameMode.ai && p.index === 1;
-const displayName = p => (isAI(p) ? `${p.name} (AI)` : p.name);
+const displayName = p => (p.mega ? p.name : isAI(p) ? `${p.name} (AI)` : p.name);
 
 /* ======================================================================
  * 6. GAME FLOW
@@ -405,7 +435,13 @@ function createPlayer(index, x) {
     grounded: true,
     inWater: false,
     health: CONFIG.START_HEALTH,
-    defeat: null,           // null | 'health' | 'water' | 'button'
+    maxHealth: CONFIG.START_HEALTH,
+    scale: 1,               // drawing size (the Mega Squirrel is bigger)
+    halfW: PLAYER_HALF_W,   // hit box
+    height: PLAYER_HEIGHT,
+    mega: false,
+    carried: false,         // true while the Mega Squirrel hangs under the jet
+    defeat: null,           // null | 'health' | 'water' | 'button' | 'island'
     aim: 45,                // degrees; 0 = flat toward the opponent, 90 = straight up, 180 = flat away
     power: 60,              // percent
     facing: index === 0 ? 1 : -1,
@@ -413,6 +449,9 @@ function createPlayer(index, x) {
     walking: false,
     walkPhase: 0,
     hurtT: 0,
+    knock: 0,               // knockback distance still to travel (px)
+    knockDir: 0,            // -1 = left, 1 = right
+    knocked: false,         // true until a knocked-back squirrel has come to rest (it can set off poop)
   };
   p.y = surfaceY(p.x);
   return p;
@@ -434,6 +473,9 @@ function newGame(startNow) {
   floatTexts = [];
   boss = null;
   poops = [];
+  megaStage = false;
+  megaOnRaft = false;
+  megaDelivery = null;
   buttonEvent = null;
   result = null;
   randomizeWind();
@@ -455,7 +497,7 @@ function beginTurn() {
   const p = active();
   // First turn of a round: also announce how long until the final boss arrives
   const firstTurnOfRound = turnNumber % 2 === 0;
-  showBanner(`${displayName(p)}'s turn`, p.color, firstTurnOfRound ? bossCountdownText() : null);
+  showBanner(`${displayName(p)}'s turn`, p.color, firstTurnOfRound && !megaStage ? bossCountdownText() : null);
   if (isAI(p)) aiBeginTurn(p);
 }
 
@@ -486,7 +528,8 @@ function nextTurn() {
     round++;
     randomizeWind();
     const bossRound = round - CONFIG.BOSS_AFTER_ROUNDS;   // 1 = the boss's first round
-    if (bossRound === 1 || (bossRound > 1 && CONFIG.BOSS_EVERY_ROUND)) {
+    // (Once the Mega Squirrel has arrived, the jet stops dropping poop.)
+    if (!megaStage && (bossRound === 1 || (bossRound > 1 && CONFIG.BOSS_EVERY_ROUND))) {
       startBossRun(bossRound === 1);
       return;                          // beginTurn() runs when the boss has flown past
     }
@@ -533,6 +576,13 @@ function showGameOver() {
   // Losing your whole island overrides everything else
   const islandless = players.filter(p => p.defeat === 'island');
   const losers = islandless.length ? islandless : players.filter(p => p.defeat);
+
+  // The human beat the computer: here comes the final final boss
+  const human = players[0];
+  if (gameMode.ai && !megaStage && losers.length === 1 && losers[0] === players[1] && !human.inWater) {
+    startMegaStage();
+    return;
+  }
   result = losers.length >= 2
     ? { winner: null, losers }
     : { winner: players.find(p => !losers.includes(p)), losers };
@@ -575,7 +625,7 @@ function stepPlayer(p, dir) {
   while (isSolid(nx, p.y - climb) && climb <= CONFIG.MAX_STEP_UP) climb++;
   if (climb > CONFIG.MAX_STEP_UP) return false;          // too steep
   const ny = p.y - climb;
-  if (isSolid(nx, ny - PLAYER_HEIGHT + 6)) return false; // head would hit ground
+  if (isSolid(nx, ny - p.height + 6)) return false;     // head would hit ground
 
   p.x = nx;
   p.y = ny;
@@ -592,6 +642,10 @@ function stepPlayer(p, dir) {
 
 /** Gravity for squirrels: falling when the ground disappears, drowning in water. */
 function updatePlayerPhysics(p, dt) {
+  if (p.carried) return;                         // hanging under the jet
+  if (p.knock > 0 && !p.inWater) updateKnockback(p, dt);
+  checkKnockbackPoop(p);
+  if (p.knocked && p.knock === 0 && p.grounded) p.knocked = false;   // came to rest
   if (p.grounded && !isSolid(p.x, p.y + 1)) {
     p.grounded = false;
     p.vy = 0;
@@ -599,12 +653,18 @@ function updatePlayerPhysics(p, dt) {
   if (p.grounded) return;
 
   p.vy = Math.min(p.vy + CONFIG.PLAYER_GRAVITY * dt, p.inWater ? 60 : 900);
+  if (p.vy < 0) {                                // rising (knockback hop)
+    if (isSolid(p.x, p.y - p.height + p.vy * dt)) p.vy = 0;   // bumped its head
+    else p.y += p.vy * dt;
+    return;
+  }
   let dist = p.vy * dt;
   while (dist > 0) {
     const s = Math.min(1, dist);
     if (!p.inWater && isSolid(p.x, Math.floor(p.y) + 1)) {   // landed
       p.y = Math.floor(p.y);
       p.grounded = true;
+      if (p.mega && p.vy > 300) megaLandingThud(p);
       p.vy = 0;
       return;
     }
@@ -619,6 +679,52 @@ function updatePlayerPhysics(p, dt) {
     spawnSplash(p.x, CONFIG.WATER_Y, 30);
     showBanner('SPLASH!', '#ffffff');
   }
+}
+
+/**
+ * Pushes a squirrel away from an explosion: from KNOCKBACK_MIN squirrel lengths at the
+ * edge of the blast up to KNOCKBACK_MAX for a direct hit (the Mega Squirrel, being
+ * bigger, moves half as far). It hops a little and can be knocked off a ledge.
+ */
+function applyKnockback(p, blastX, closeness, big = false) {
+  const min = big ? CONFIG.POOP_KNOCKBACK_MIN : CONFIG.KNOCKBACK_MIN;
+  const max = big ? CONFIG.POOP_KNOCKBACK_MAX : CONFIG.KNOCKBACK_MAX;
+  const squirrels = lerp(min, max, clamp(closeness, 0, 1));
+  p.knock = Math.round(squirrels * CONFIG.SQUIRREL_LENGTH / p.scale);
+  const dx = p.x - blastX;
+  p.knockDir = Math.abs(dx) >= 1 ? Math.sign(dx) : -p.facing;   // dead-centre hit: pushed backwards
+  p.grounded = false;
+  p.knocked = true;
+  const hop = big ? 260 + 200 * closeness : 120 + 120 * closeness;
+  p.vy = -hop / Math.sqrt(p.scale);                            // hop (a big one for poop blasts)
+}
+
+/** A knocked-back squirrel that bumps into explosive poop sets it off. */
+function checkKnockbackPoop(p) {
+  if (!p.knocked || p.inWater) return;
+  const pp = poops.find(o => o.grounded && distanceToBody(p, o.x, o.y - 6) < CONFIG.POOP_RADIUS);
+  if (!pp) return;
+  floatTexts.push({ x: pp.x, y: pp.y - 40, text: 'BUMP!', color: '#ffffff', life: 1.0 });
+  poopExplosion(pp);
+}
+
+/** Moves a knocked-back squirrel sideways, climbing small bumps and stopping at walls. */
+function updateKnockback(p, dt) {
+  p.knockAcc = (p.knockAcc || 0) + CONFIG.KNOCKBACK_SPEED * dt;
+  while (p.knockAcc >= 1 && p.knock > 0) {
+    p.knockAcc -= 1;
+    const nx = p.x + p.knockDir;
+    let climb = 0;
+    while (isSolid(nx, p.y - climb) && climb <= CONFIG.MAX_STEP_UP + 2) climb++;
+    if (nx < 4 || nx > W - 4 || climb > CONFIG.MAX_STEP_UP + 2 || isSolid(nx, p.y - climb - p.height + 6)) {
+      p.knock = 0;                                 // hit a wall or the screen edge
+      break;
+    }
+    p.x = nx;
+    p.y -= climb;
+    p.knock--;
+  }
+  if (p.knock <= 0) p.knockAcc = 0;
 }
 
 /** Movement phase: walk with Left/Right while there is movement left. */
@@ -689,7 +795,8 @@ const PUCK_STEP = 1 / 480;
 function launchState(p, aim, power) {
   const d = aimVector(p, aim);
   const speed = CONFIG.MAX_SHOT_SPEED * power / 100;
-  return { x: p.x + d.x * 20, y: p.y - 18 + d.y * 20, vx: d.x * speed, vy: d.y * speed, age: 0 };
+  const k = p.scale;
+  return { x: p.x + d.x * 20 * k, y: p.y - 18 * k + d.y * 20 * k, vx: d.x * speed, vy: d.y * speed, age: 0 };
 }
 
 /** Advances a puck (or a simulated one) by one fixed step. */
@@ -713,6 +820,8 @@ function launchPuck(p) {
     trail: [],
   };
   state = 'flight';
+  Sound.slapshot(p.power);
+  Sound.startFlight();
   // A few sparks off the stick
   for (let i = 0; i < 8; i++) {
     particles.push({ x: puck.x, y: puck.y, vx: rand(-80, 80) + d.x * 60, vy: rand(-80, 40), g: 200,
@@ -731,6 +840,7 @@ function updatePuck(dt) {
     if (hit) { resolvePuckHit(hit); return; }
   }
   puck.rot += puck.spin * dt;
+  Sound.updateFlight(Math.hypot(puck.vx, puck.vy), puck.spin);
   puck.trail.push({ x: puck.x, y: puck.y });
   if (puck.trail.length > 14) puck.trail.shift();
 }
@@ -769,8 +879,9 @@ function puckHitTest(x, y, owner, age) {
   for (const p of players) {
     if (p.inWater) continue;
     if (p === owner && age < 0.2) continue;
-    if (x > p.x - PLAYER_HALF_W - PUCK_RADIUS && x < p.x + PLAYER_HALF_W + PUCK_RADIUS &&
-        y > p.y - PLAYER_HEIGHT - PUCK_RADIUS && y < p.y + PUCK_RADIUS) return 'player';
+    if (p.carried) continue;
+    if (x > p.x - p.halfW - PUCK_RADIUS && x < p.x + p.halfW + PUCK_RADIUS &&
+        y > p.y - p.height - PUCK_RADIUS && y < p.y + PUCK_RADIUS) return 'player';
   }
   if (isSolid(x, y) || isSolid(x + 4, y) || isSolid(x - 4, y) || isSolid(x, y + 4) || isSolid(x, y - 4)) return 'terrain';
   if (y >= CONFIG.WATER_Y) return 'water';
@@ -799,34 +910,38 @@ function resolvePuckHit(hit) {
       poopExplosion(poopAt(x, y));
       break;
     default:                            // post, player or terrain
-      explode(x, y);
+      explode(x, y, owner);
   }
 }
 
 /** Distance from (x, y) to the closest point of a squirrel's body. */
 function distanceToBody(p, x, y) {
-  const cx = clamp(x, p.x - PLAYER_HALF_W, p.x + PLAYER_HALF_W);
-  const cy = clamp(y, p.y - PLAYER_HEIGHT, p.y);
+  const cx = clamp(x, p.x - p.halfW, p.x + p.halfW);
+  const cy = clamp(y, p.y - p.height, p.y);
   return Math.hypot(x - cx, y - cy);
 }
 
-/** Explosion: crater, distance-based damage, effects. */
-function explode(x, y) {
+/** Explosion: crater, distance-based damage, effects. The Mega Squirrel's pucks are stronger. */
+function explode(x, y, shooter = null) {
+  const mega = shooter && shooter.mega;
+  const damageMult = mega ? CONFIG.MEGA_DAMAGE_MULT : 1;
   puck = null;
-  carveCrater(x, y, CONFIG.CRATER_RADIUS);
+  carveCrater(x, y, CONFIG.CRATER_RADIUS * (mega ? CONFIG.MEGA_CRATER_MULT : 1));
 
   for (const p of players) {
     if (p.inWater) continue;
     const d = distanceToBody(p, x, y);
     if (d >= CONFIG.DAMAGE_RADIUS) continue;
-    const dmg = Math.round(CONFIG.MAX_DAMAGE * (1 - d / CONFIG.DAMAGE_RADIUS));
+    const dmg = Math.round(CONFIG.MAX_DAMAGE * damageMult * (1 - d / CONFIG.DAMAGE_RADIUS));
     if (dmg <= 0) continue;
     p.health = Math.max(0, p.health - dmg);
     p.hurtT = 0.7;
-    floatTexts.push({ x: p.x, y: p.y - 55, text: `-${dmg}`, color: p.color, life: 1.4 });
+    applyKnockback(p, x, 1 - d / CONFIG.DAMAGE_RADIUS);
+    floatTexts.push({ x: p.x, y: p.y - p.height - 17, text: `-${dmg}`, color: p.color, life: 1.4 });
   }
 
   spawnExplosion(x, y);
+  Sound.poff(false);
   shake = 10;
   enterSettle();
 }
@@ -851,19 +966,22 @@ function approach(value, target, maxStep) {
 
 /** True if walking a few pixels in this direction keeps the squirrel safely on the ground. */
 function safeToStep(p, dir) {
-  const probe = { x: p.x, y: p.y, grounded: true, vy: 0 };
+  const probe = { x: p.x, y: p.y, grounded: true, vy: 0, height: p.height };
   for (let i = 0; i < 14; i++) {          // look a little ahead for ledges
     if (!stepPlayer(probe, dir) || !probe.grounded) return false;
   }
   return probe.y < CONFIG.WATER_Y - 20;
 }
 
+/** The AI level a computer player uses. The Mega Squirrel always plays on Hard. */
+const aiLevelFor = p => (p.mega ? AI_LEVELS.hard : AI_LEVELS[gameMode.difficulty]);
+
 function aiBeginTurn(p) {
-  const level = AI_LEVELS[gameMode.difficulty];
+  const level = aiLevelFor(p);
   ai.wait = 0.7;
   ai.dir = Math.random() < 0.5 ? -1 : 1;
   if (!safeToStep(p, ai.dir)) ai.dir = -ai.dir;
-  ai.walkLeft = randInt(0, level.maxWalk);
+  ai.walkLeft = p.mega ? 0 : randInt(0, level.maxWalk);   // the Mega Squirrel is too big to walk
 }
 
 /** Movement phase for the AI: returns the direction to walk (0 = standing still). */
@@ -887,10 +1005,11 @@ function simulateShot(p, aim, power, windAccel) {
 
 /** Chooses the AI's target angle and power for this turn. */
 function aiPlanShot(p) {
-  const level = AI_LEVELS[gameMode.difficulty];
+  const level = aiLevelFor(p);
   const opp = players[1 - p.index];
   const believedWind = wind * level.windAwareness;
-  let best = null;
+  const candidates = [];             // every useful shot, scored (lower = better)
+  let best = null;                   // (kept so each candidate check below stays simple)
 
   for (let aim = 8; aim <= 86; aim += 2) {
     for (let power = 16; power <= 100; power += 2) {
@@ -907,19 +1026,41 @@ function aiPlanShot(p) {
         const score = island === opp.index && left < CONFIG.ISLAND_GONE_FRACTION
           ? -1000                                        // winning shot
           : distanceToBody(opp, poop.x, poop.y) - 60;
-        if (!best || score < best.score) best = { aim, power, score };
+        candidates.push({ aim, power, score });
         continue;
       }
       if (distanceToBody(p, r.x, r.y) < CONFIG.DAMAGE_RADIUS + 10) continue;   // don't blow itself up
       let score = distanceToBody(opp, r.x, r.y);
       if (r.type === 'water' || r.type === 'out' || r.type === 'post') score += 300;   // harmless shots
-      if (!best || score < best.score) best = { aim, power, score };
+      candidates.push({ aim, power, score });
     }
   }
-  if (!best) best = { aim: 60, power: 70 };
 
-  ai.targetAim = clamp(best.aim + gaussian() * level.angleError, 0, 180);
-  ai.targetPower = clamp(best.power + gaussian() * level.powerError, 5, 100);
+  // Take the best shot that stays clear of the red button even if the AI's
+  // aim or its guess of the wind is a bit off (the button sits high, so many
+  // good shots skim just over it).
+  candidates.sort((a, b) => a.score - b.score);
+  const aimMargin = Math.max(1.5, level.angleError * 1.5);
+  const powerMargin = Math.max(1.5, level.powerError * 1.5);
+  const windDoubt = CONFIG.WIND_MAX * 0.6 * (1 - level.windAwareness) + 10;
+  // Checks a grid of possible mistakes (aim x power x wind), since the button
+  // can sit between two outcomes that both miss it.
+  const safeFromButton = c => {
+    for (const fw of [-1, -2 / 3, -1 / 3, 0, 1 / 3, 2 / 3, 1]) {
+      for (const fa of [-1, -0.5, 0, 0.5, 1]) {
+        for (const fp of [-1, 0, 1]) {
+          const r = simulateShot(p, c.aim + fa * aimMargin, c.power + fp * powerMargin, believedWind + fw * windDoubt);
+          if (r.type === 'button') return false;
+        }
+      }
+    }
+    return true;
+  };
+  best = candidates.slice(0, 300).find(safeFromButton) || candidates[0] || { aim: 60, power: 70 };
+
+  // Mistakes are capped at the safety margin above, so they never reach the button
+  ai.targetAim = clamp(best.aim + clamp(gaussian(), -1.5, 1.5) * level.angleError, 0, 180);
+  ai.targetPower = clamp(best.power + clamp(gaussian(), -1.5, 1.5) * level.powerError, 5, 100);
   ai.wait = level.thinkTime;
   ai.aimed = false;
 }
@@ -1059,16 +1200,18 @@ function poopExplosion(pp) {
     if (dmg <= 0) continue;
     p.health = Math.max(0, p.health - dmg);
     p.hurtT = 0.9;
+    applyKnockback(p, x, 1 - d / CONFIG.POOP_DAMAGE_RADIUS, true);
     floatTexts.push({ x: p.x, y: p.y - 55, text: `-${dmg}`, color: p.color, life: 1.6 });
   }
 
   for (let i = 0; i < 3; i++) spawnExplosion(x + rand(-35, 35), y + rand(-30, 20));
+  Sound.poff(true);
   flashes.push({ x, y, t: 0, scale: 2.6 });
   floatTexts.push({ x, y: y - 70, text: 'KA-BOOM!', color: '#ffd23b', life: 1.6 });
   shake = 24;
 
   // Island 0 belongs to Red (player 0), island 1 to Blue (player 1)
-  if (islandRemaining(island) < CONFIG.ISLAND_GONE_FRACTION) {
+  if (islandRemaining(island) < CONFIG.ISLAND_GONE_FRACTION && !(players[island].mega && megaOnRaft)) {
     players[island].defeat = 'island';
     showBanner(`${players[island].name}'s island is destroyed!`, '#ff5a3a');
   }
@@ -1215,13 +1358,364 @@ function drawBossStatus(cx, cy) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.font = 'bold 13px system-ui, sans-serif';
-  if (n > 0) {
+  if (megaStage) {
+    ctx.fillStyle = '#d6a8ff';
+    ctx.fillText('FINAL FINAL BOSS: Mega Squirrel', cx, cy + 1);
+  } else if (n > 0) {
     ctx.fillStyle = n <= 3 ? '#ffb36b' : '#ffffff';
     ctx.fillText(`Final boss in ${n} round${n === 1 ? '' : 's'}`, cx, cy + 1);
   } else {
     ctx.fillStyle = '#ff7a6b';
     ctx.fillText('FINAL BOSS: the Seagull Striker', cx, cy + 1);
   }
+}
+
+/* ======================================================================
+ * 8d. FINAL FINAL BOSS: THE MEGA SQUIRREL
+ *    vs Computer only. When the human beats the AI, the Seagull Striker
+ *    flies in carrying a giant squirrel and drops it onto the AI's island,
+ *    or onto a raft if the island is (nearly) gone. From then on the jet
+ *    drops no more poop. The Mega Squirrel has more health, hits harder and
+ *    is too big to walk. It always aims like the Hard AI, whatever difficulty was chosen.
+ * ====================================================================== */
+
+/** A spot on the AI's island with room for the Mega Squirrel, or null if there is none. */
+function findMegaSpot() {
+  if (islandRemaining(1) < 0.15) return null;
+  const cx = CONFIG.RIGHT_ISLAND_X;
+  const megaHeight = PLAYER_HEIGHT * CONFIG.MEGA_SCALE;
+  for (let off = 0; off <= CONFIG.ISLAND_HALF_WIDTH - 40; off += 4) {
+    for (const x of [cx + off, cx - off]) {
+      const y = surfaceY(x);
+      if (y >= CONFIG.WATER_Y - 20) continue;                                  // no ground here
+      if (isSolid(x, y - megaHeight)) continue;                                // no head room
+      if (surfaceY(x - 15) >= CONFIG.WATER_Y - 10 || surfaceY(x + 15) >= CONFIG.WATER_Y - 10) continue;  // too narrow
+      return x;
+    }
+  }
+  return null;
+}
+
+/** Builds a wooden raft (as terrain, so it can be blown up) floating at x. */
+function buildRaft(cx) {
+  const hw = CONFIG.MEGA_RAFT_HALF_WIDTH;
+  const top = CONFIG.WATER_Y - 10, bottom = CONFIG.WATER_Y + 8;
+  for (let x = cx - hw, i = 0; x < cx + hw; x += 12, i++) {
+    tctx.fillStyle = i % 2 ? '#9a6a3a' : '#87582c';
+    tctx.fillRect(x, top, 11, bottom - top);
+  }
+  tctx.fillStyle = '#5c3a1c';                       // cross beams
+  tctx.fillRect(cx - hw, top + 2, hw * 2, 3);
+  tctx.fillRect(cx - hw, bottom - 7, hw * 2, 3);
+  for (let y = top; y < bottom; y++) {
+    for (let x = cx - hw; x < cx + hw; x++) solid[y * W + x] = 1;
+  }
+}
+
+/** The human beat the AI: the jet brings in the Mega Squirrel. */
+function startMegaStage() {
+  megaStage = true;
+  buttonEvent = null;
+  puck = null;
+
+  let dropX = findMegaSpot();
+  megaOnRaft = dropX === null;
+  if (megaOnRaft) {
+    dropX = CONFIG.RIGHT_ISLAND_X;
+    buildRaft(dropX);
+  }
+
+  // Replace the defeated AI with the boss
+  const k = CONFIG.MEGA_SCALE;
+  const mega = createPlayer(1, dropX);
+  Object.assign(mega, {
+    name: 'Mega Squirrel', color: '#8e44ec', dark: '#4b1d8f', light: '#d6a8ff', helmet: '#f2c200',
+    mega: true, scale: k, halfW: PLAYER_HALF_W * k, height: PLAYER_HEIGHT * k,
+    health: CONFIG.MEGA_HEALTH, maxHealth: CONFIG.MEGA_HEALTH,
+    carried: true, grounded: false, facing: -1,
+  });
+  players[1] = mega;
+
+  if (CONFIG.HEAL_FOR_MEGA) players[0].health = players[0].maxHealth;
+
+  // The Seagull Striker carries it in (no poop this time)
+  const dir = Math.random() < 0.5 ? 1 : -1;
+  boss = { x: dir > 0 ? -400 : W + 400, y: 140, dir, t: 0, targets: [] };
+  megaDelivery = { dropX, dropped: false };
+  state = 'mega';
+  showBanner('FINAL FINAL BOSS!', '#d6a8ff',
+    `The Seagull Striker drops in the MEGA SQUIRREL${megaOnRaft ? ' (on a raft!)' : ''}!` +
+    (CONFIG.HEAL_FOR_MEGA ? ' Your health is restored.' : ''));
+}
+
+function updateMegaDelivery(dt) {
+  const m = players[1];
+  boss.t += dt;
+  boss.x += boss.dir * CONFIG.BOSS_SPEED * 0.8 * dt;
+
+  if (!megaDelivery.dropped) {
+    m.x = Math.round(boss.x);
+    m.y = boss.y + 70;
+    if (boss.dir > 0 ? boss.x >= megaDelivery.dropX : boss.x <= megaDelivery.dropX) {
+      megaDelivery.dropped = true;
+      m.carried = false;
+      m.x = megaDelivery.dropX;
+      m.grounded = false;
+      m.vy = 0;
+    }
+  }
+
+  if (boss.x > -100 && boss.x < W + 100) {         // contrail
+    particles.push({ x: boss.x - boss.dir * 75, y: boss.y + rand(-3, 3), vx: -boss.dir * 40, vy: 0, g: 0,
+      life: 0.6, max: 0.6, size: rand(4, 7), color: '#ffffff', smoke: true });
+  }
+
+  // Jet gone and the boss has landed: the fight starts, human first
+  const offscreen = boss.dir > 0 ? boss.x > W + 200 : boss.x < -200;
+  if (offscreen && megaDelivery.dropped && (m.grounded || m.inWater)) {
+    boss = null;
+    megaDelivery = null;
+    if (turnNumber % 2 === 1) turnNumber++;           // keep "player 0 on even turns"
+    round++;
+    randomizeWind();
+    current = 0;
+    beginTurn();
+  }
+}
+
+/** Big landing: screen shake and a cloud of dust. */
+function megaLandingThud(p) {
+  shake = 18;
+  floatTexts.push({ x: p.x, y: p.y - p.height - 30, text: 'THUD!', color: '#d6a8ff', life: 1.4 });
+  for (let i = 0; i < 24; i++) {
+    particles.push({ x: p.x + rand(-30, 30), y: p.y - 2, vx: rand(-160, 160), vy: rand(-120, -20), g: 200,
+      life: rand(0.5, 1.0), max: 1.0, size: rand(6, 12), color: '#b9a58a', smoke: true });
+  }
+}
+
+/** The Mega Squirrel hanging under the jet on a cable. */
+function drawMegaDelivery() {
+  if (!megaDelivery || megaDelivery.dropped || !boss) return;
+  const m = players[1];
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(boss.x, boss.y + 12);
+  ctx.lineTo(m.x, m.y - m.height + 4);
+  ctx.stroke();
+  drawSquirrel(m);
+}
+
+/* ======================================================================
+ * 8e. SOUND EFFECTS
+ *    Everything is synthesized with the Web Audio API (no audio files):
+ *      slapshot: noise "crack" + falling-pitch wooden "thwack"
+ *      flight:   looping noise through a band-pass filter, pulsed at the
+ *                puck's tumble rate -> "whup-whup-whup" while it flops along
+ *      poff:     cartoon explosion, a falling "poff" plus a soft noise puff
+ *                (a much bigger, deeper one for exploding bird poop)
+ *      splash:   short sweep of filtered noise
+ *    Browsers only allow audio after the player has pressed a key or clicked,
+ *    so the audio context is created on the first input. M toggles mute.
+ *    Each sound takes (ctx, destination, startTime) so it can also be
+ *    rendered offline for testing.
+ * ====================================================================== */
+const SFX = {
+  noiseBuffers: new WeakMap(),
+
+  /** One second of white noise for this audio context (made once). */
+  noise(ac) {
+    if (!this.noiseBuffers.has(ac)) {
+      const buf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      this.noiseBuffers.set(ac, buf);
+    }
+    const src = ac.createBufferSource();
+    src.buffer = this.noiseBuffers.get(ac);
+    return src;
+  },
+
+  /** Gain node with an instant attack and an exponential fade-out. */
+  envelope(ac, t, peak, duration) {
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(peak, t + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + duration);
+    return g;
+  },
+
+  /** Stick hits puck: crack + thwack, louder with more power (0..100). */
+  slapshot(ac, out, t, power) {
+    const vol = 0.55 + 0.45 * power / 100;
+    // Crack: bright noise burst
+    const n = this.noise(ac);
+    const hp = ac.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 1800;
+    const ng = this.envelope(ac, t, 0.9 * vol, 0.09);
+    n.connect(hp).connect(ng).connect(out);
+    n.start(t);
+    n.stop(t + 0.12);
+    // Thwack: wooden body with a fast pitch drop
+    const o = ac.createOscillator();
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(260, t);
+    o.frequency.exponentialRampToValueAtTime(70, t + 0.13);
+    const og = this.envelope(ac, t, 0.8 * vol, 0.16);
+    o.connect(og).connect(out);
+    o.start(t);
+    o.stop(t + 0.2);
+    // Clack of the blade
+    const c = ac.createOscillator();
+    c.type = 'square';
+    c.frequency.value = 1100;
+    const cg = this.envelope(ac, t, 0.18 * vol, 0.025);
+    c.connect(cg).connect(out);
+    c.start(t);
+    c.stop(t + 0.04);
+  },
+
+  /** Starts the "flopping through the air" loop. Returns handles for update/stop. */
+  startFlight(ac, out, t) {
+    const src = this.noise(ac);
+    src.loop = true;
+    const bp = ac.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 700;
+    bp.Q.value = 1.4;
+    const level = ac.createGain();          // overall loudness (follows speed)
+    level.gain.setValueAtTime(0.0001, t);
+    level.gain.exponentialRampToValueAtTime(1.0, t + 0.06);
+    const flutter = ac.createGain();        // pulsed by the LFO: the "whup-whup"
+    flutter.gain.value = 0.5;
+    const lfo = ac.createOscillator();
+    lfo.type = 'sine';
+    lfo.frequency.value = 5;
+    const depth = ac.createGain();
+    depth.gain.value = 0.5;
+    lfo.connect(depth).connect(flutter.gain);
+    src.connect(bp).connect(flutter).connect(level).connect(out);
+    src.start(t);
+    lfo.start(t);
+    return { src, lfo, bp, level };
+  },
+
+  /** Follows the puck: faster = higher and louder, spin rate = flutter rate. */
+  updateFlight(ac, f, speed, spin) {
+    const t = ac.currentTime;
+    f.bp.frequency.setTargetAtTime(350 + speed * 0.9, t, 0.05);
+    f.level.gain.setTargetAtTime(0.4 + Math.min(0.9, speed / 1000), t, 0.05);
+    f.lfo.frequency.setTargetAtTime(Math.abs(spin) / Math.PI, t, 0.05);   // a flat puck "whups" twice per turn
+  },
+
+  stopFlight(ac, f) {
+    const t = ac.currentTime;
+    f.level.gain.cancelScheduledValues(t);
+    f.level.gain.setTargetAtTime(0.0001, t, 0.02);
+    f.src.stop(t + 0.12);
+    f.lfo.stop(t + 0.12);
+  },
+
+  /** Silly cartoon explosion: "poff" (big = exploding bird poop). */
+  poff(ac, out, t, big) {
+    const len = big ? 0.55 : 0.22;
+    // The "poff": a round tone falling fast in pitch
+    const o = ac.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(big ? 300 : 520, t);
+    o.frequency.exponentialRampToValueAtTime(big ? 40 : 85, t + len);
+    const og = this.envelope(ac, t, big ? 1.0 : 0.8, len + 0.05);
+    o.connect(og).connect(out);
+    o.start(t);
+    o.stop(t + len + 0.1);
+    // Soft puff of air
+    const n = this.noise(ac);
+    const lp = ac.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(big ? 1400 : 2200, t);
+    lp.frequency.exponentialRampToValueAtTime(big ? 120 : 300, t + len * 1.6);
+    const ng = this.envelope(ac, t, big ? 0.9 : 0.5, len * 1.8);
+    n.connect(lp).connect(ng).connect(out);
+    n.start(t);
+    n.stop(t + len * 2);
+    if (big) {
+      // Deep rumble and a second "poff" for the giant blast
+      const r = ac.createOscillator();
+      r.type = 'sine';
+      r.frequency.setValueAtTime(70, t);
+      r.frequency.exponentialRampToValueAtTime(30, t + 0.9);
+      const rg = this.envelope(ac, t, 0.7, 0.9);
+      r.connect(rg).connect(out);
+      r.start(t);
+      r.stop(t + 1);
+      this.poff(ac, out, t + 0.12, false);
+    }
+  },
+
+  /** Short watery splash. */
+  splash(ac, out, t, size) {
+    const n = this.noise(ac);
+    const bp = ac.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.Q.value = 0.8;
+    bp.frequency.setValueAtTime(1800, t);
+    bp.frequency.exponentialRampToValueAtTime(500, t + 0.35);
+    const g = this.envelope(ac, t, 0.6 + 0.8 * size, 0.45);
+    n.connect(bp).connect(g).connect(out);
+    n.start(t);
+    n.stop(t + 0.45);
+  },
+};
+
+/** Live audio for the game: creates the context on first input and handles mute. */
+const Sound = {
+  ac: null,
+  master: null,
+  muted: false,
+  flight: null,
+
+  /** Called on every key press / click: browsers only start audio after user input. */
+  unlock() {
+    if (!this.ac) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      this.ac = new AC();
+      this.master = this.ac.createGain();
+      this.master.gain.value = CONFIG.SOUND_VOLUME;
+      this.master.connect(this.ac.destination);
+    }
+    if (this.ac.state === 'suspended') this.ac.resume();
+  },
+  ready() { return this.ac && !this.muted; },
+
+  toggleMute() {
+    this.muted = !this.muted;
+    if (this.muted) this.stopFlight();
+    if (this.master) this.master.gain.value = this.muted ? 0 : CONFIG.SOUND_VOLUME;
+  },
+
+  slapshot(power) { if (this.ready()) SFX.slapshot(this.ac, this.master, this.ac.currentTime, power); },
+  poff(big) { if (this.ready()) SFX.poff(this.ac, this.master, this.ac.currentTime, big); },
+  splash(size) { if (this.ready()) SFX.splash(this.ac, this.master, this.ac.currentTime, size); },
+  startFlight() {
+    this.stopFlight();
+    if (this.ready()) this.flight = SFX.startFlight(this.ac, this.master, this.ac.currentTime);
+  },
+  updateFlight(speed, spin) { if (this.flight) SFX.updateFlight(this.ac, this.flight, speed, spin); },
+  stopFlight() {
+    if (this.flight) SFX.stopFlight(this.ac, this.flight);
+    this.flight = null;
+  },
+};
+
+/** Small "Sound on/off (M)" note in the bottom-right corner. */
+function drawSoundIndicator() {
+  ctx.font = '13px system-ui, sans-serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.fillText(Sound.muted ? 'Sound off · M' : 'Sound on · M', W - 14, H - 14);
 }
 
 /* ======================================================================
@@ -1247,6 +1741,7 @@ function spawnExplosion(x, y) {
 }
 
 function spawnSplash(x, y, count) {
+  Sound.splash(Math.min(1, count / 30));
   for (let i = 0; i < count; i++) {
     particles.push({ x: x + rand(-8, 8), y, vx: rand(-130, 130), vy: rand(-460, -180), g: 900,
       life: rand(0.6, 1.0), max: 1.0, size: rand(2, 4), color: Math.random() < 0.5 ? '#d8f1ff' : '#5fb0f0', water: true });
@@ -1292,6 +1787,7 @@ function showBanner(text, color, sub = null) {
  * ====================================================================== */
 function update(dt) {
   time += dt;
+  if (!puck && Sound.flight) Sound.stopFlight();     // the puck's flight ended (hit, splash, reset...)
   updateEffects(dt);
 
   if (state !== 'title') {
@@ -1311,7 +1807,7 @@ function update(dt) {
     case 'flight': updatePuck(dt); break;
     case 'settle': {
       settleTimer += dt;
-      const calm = players.every(p => p.grounded || p.inWater) && poops.every(pp => pp.grounded);
+      const calm = players.every(p => (p.grounded && !p.knocked) || p.inWater) && poops.every(pp => pp.grounded);
       if ((settleTimer > 1.0 && calm && particles.length < 10) || settleTimer > 4) {
         if (players.some(p => p.defeat || p.health <= 0)) showGameOver();
         else nextTurn();
@@ -1319,6 +1815,7 @@ function update(dt) {
       break;
     }
     case 'boss':   updateBoss(dt); break;
+    case 'mega':   updateMegaDelivery(dt); break;
     case 'button':
       buttonEvent.t += dt;
       if (buttonEvent.t > 2.4) showGameOver();
@@ -1508,7 +2005,7 @@ function drawSquirrel(p) {
   ctx.save();
   ctx.translate(p.x, p.y);
   if (p.hurtT > 0 && Math.floor(p.hurtT * 20) % 2 === 0) ctx.globalAlpha = 0.45;
-  ctx.scale(p.facing, 1);
+  ctx.scale(p.facing * p.scale, p.scale);
   const bob = p.walking ? Math.abs(Math.sin(p.walkPhase)) * 2 : 0;
   ctx.translate(0, -bob);
 
@@ -1586,8 +2083,18 @@ function drawSquirrel(p) {
   ctx.arc(9, -32.5, 1.4, 0, TAU);
   ctx.fill();
 
+  // Angry eyebrow for the boss
+  if (p.mega) {
+    ctx.strokeStyle = '#2a1607';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(5, -36.5);
+    ctx.lineTo(11.5, -34);
+    ctx.stroke();
+  }
+
   // Hockey helmet: dome, stripe, face cage
-  ctx.fillStyle = p.color;
+  ctx.fillStyle = p.helmet || p.color;
   ctx.strokeStyle = p.dark;
   ctx.lineWidth = 1.5;
   ctx.beginPath();
@@ -1649,7 +2156,7 @@ function drawSquirrel(p) {
 
 /** Bouncing arrow above the active squirrel. */
 function drawActiveMarker(p) {
-  const y = p.y - 66 + Math.sin(time * 5) * 4;
+  const y = p.y - p.height - 28 + Math.sin(time * 5) * 4;
   ctx.fillStyle = p.color;
   ctx.strokeStyle = '#fff';
   ctx.lineWidth = 2;
@@ -1665,7 +2172,7 @@ function drawActiveMarker(p) {
 /** Dashed aim line whose length shows the power. */
 function drawAimGuide(p) {
   const d = aimVector(p);
-  const ox = p.x, oy = p.y - 18;
+  const ox = p.x, oy = p.y - 18 * p.scale;
   const len = 40 + p.power * 0.9;
   ctx.save();
   ctx.strokeStyle = 'rgba(255,255,255,0.9)';
@@ -1784,7 +2291,9 @@ function drawHealthPanel(p, x) {
   ctx.textAlign = 'left';
   ctx.font = 'bold 18px system-ui, sans-serif';
   ctx.fillStyle = p.light;
-  ctx.fillText(isAI(p) ? `${p.name} · AI ${AI_LEVELS[gameMode.difficulty].label}` : `${p.name} Squirrel`, x + 14, 32);
+  const label = p.mega ? p.name
+    : isAI(p) ? `${p.name} · AI ${AI_LEVELS[gameMode.difficulty].label}` : `${p.name} Squirrel`;
+  ctx.fillText(label, x + 14, 32);
   ctx.textAlign = 'right';
   ctx.fillStyle = '#fff';
   ctx.fillText(`${Math.ceil(p.health)} HP`, x + 256, 32);
@@ -1792,7 +2301,7 @@ function drawHealthPanel(p, x) {
   ctx.fillStyle = 'rgba(255,255,255,0.15)';
   ctx.fillRect(x + 14, 48, 242, 14);
   ctx.fillStyle = p.color;
-  ctx.fillRect(x + 14, 48, 242 * (p.health / CONFIG.START_HEALTH), 14);
+  ctx.fillRect(x + 14, 48, 242 * (p.health / p.maxHealth), 14);
   ctx.strokeStyle = 'rgba(255,255,255,0.6)';
   ctx.lineWidth = 1;
   ctx.strokeRect(x + 14.5, 48.5, 241, 13);
@@ -1844,7 +2353,7 @@ function drawHUD() {
   ctx.textBaseline = 'middle';
   ctx.font = 'bold 17px system-ui, sans-serif';
   ctx.fillStyle = '#fff';
-  const phaseName = { move: 'Move', aim: 'Aim', swing: 'Shoot!', flight: 'Puck in the air', settle: '...', boss: 'Incoming!', button: '!!!', gameover: '' }[state] || '';
+  const phaseName = { move: 'Move', aim: 'Aim', swing: 'Shoot!', flight: 'Puck in the air', settle: '...', boss: 'Incoming!', mega: 'BOSS INCOMING!', button: '!!!', gameover: '' }[state] || '';
   // "Round N · <Name> · <Phase>", with the name in team colour, centred as a whole
   const parts = [
     [`Round ${round} · `, '#fff'],
@@ -1962,7 +2471,7 @@ function drawTitle() {
 
   ctx.font = '20px system-ui, sans-serif';
   ctx.fillStyle = '#fff';
-  ctx.fillText('Two squirrels. Two islands. Exploding hockey pucks.', W / 2, 165);
+  ctx.fillText('Two squirrels. Two islands. Exploding hockey pucks.', W / 2, 160);
 
   const lines = [
     ['Move phase', '← / → walk along the island, Enter to finish moving'],
@@ -1970,10 +2479,11 @@ function drawTitle() {
     ['Win by', 'reducing the other squirrel to 0 HP or knocking them into the water'],
     ['Never', 'hit the red button with a puck, or click it. You lose instantly.'],
     [`Round ${CONFIG.BOSS_AFTER_ROUNDS + 1}`, 'a final boss bombs the islands with explosive poop. Lose your whole island and you lose!'],
+    ['Beat the AI', 'and the final final boss drops in: the giant Mega Squirrel!'],
   ];
   ctx.font = '17px system-ui, sans-serif';
   lines.forEach(([k, v], i) => {
-    const y = 205 + i * 33;
+    const y = 196 + i * 30;
     ctx.textAlign = 'right';
     ctx.fillStyle = i === 3 ? '#ff6b6b' : '#9fe0ff';
     ctx.font = 'bold 17px system-ui, sans-serif';
@@ -2019,7 +2529,11 @@ function drawGameOver() {
   ctx.textBaseline = 'middle';
 
   ctx.font = 'bold 56px system-ui, sans-serif';
-  if (result.winner) {
+  if (result.winner && result.losers.some(p => p.mega)) {
+    ctx.fillStyle = '#ffd23b';
+    ctx.font = 'bold 44px system-ui, sans-serif';
+    ctx.fillText('YOU BEAT THE FINAL FINAL BOSS!', W / 2, 240);
+  } else if (result.winner) {
     ctx.fillStyle = result.winner.color;
     ctx.fillText(`${displayName(result.winner)} wins!`, W / 2, 240);
   } else {
@@ -2068,22 +2582,25 @@ function render() {
   ctx.drawImage(terrainCanvas, 0, 0);
   drawButton();
   drawPoops();
-  for (const p of players) drawSquirrel(p);
+  for (const p of players) if (!p.carried) drawSquirrel(p);
   if (state === 'aim') drawAimGuide(active());
   if (['move', 'aim', 'swing'].includes(state)) drawActiveMarker(active());
   drawPuck();
   drawWater();
   drawEffects();
   drawBoss();
+  drawMegaDelivery();
   ctx.restore();
 
   if (state === 'title') {
     drawTitle();
+    drawSoundIndicator();
     return;
   }
   drawHUD();
   if (state === 'button') drawButtonAlarm();
   if (state === 'gameover') drawGameOver();
+  drawSoundIndicator();
 }
 
 /* ======================================================================
@@ -2094,6 +2611,8 @@ const GAME_KEYS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', '
 window.addEventListener('keydown', e => {
   if (GAME_KEYS.includes(e.code)) e.preventDefault();
   keys[e.code] = true;
+  Sound.unlock();
+  if (e.code === 'KeyM' && !e.repeat) Sound.toggleMute();
 
   // Title screen: choose a game mode
   if (state === 'title') {
@@ -2120,6 +2639,7 @@ window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; }
 const TURN_STATES = ['move', 'aim', 'swing', 'flight', 'settle'];
 
 canvas.addEventListener('mousedown', e => {
+  Sound.unlock();
   const pt = toGameCoords(e);
   if (state === 'title') {
     MENU.forEach((_, i) => { if (inRect(pt, menuRect(i))) startMode(i); });

@@ -176,7 +176,7 @@ kbd{font:inherit;font-weight:800;font-size:.82rem;padding:3px 9px;border-radius:
   <div class="wrap">
     <div class="marquee"><span class="bulbs"></span>
       <h1>Survival Hub</h1>
-      <p>Five tiny games. Stay alive as long as you can.</p>
+      <p>Six tiny games. Stay alive as long as you can.</p>
     </div>
     <div class="overall">
       <div class="ring" id="hubRing"><b id="hubScore">0</b></div>
@@ -214,7 +214,7 @@ const mix = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b
 const rgb = c => `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`;
 
 function rr(ctx, x, y, w, h, r) {
-  r = Math.min(r, w / 2, h / 2);
+  r = Math.max(0, Math.min(r, w / 2, h / 2));   // never negative: canvas throws on a negative radius
   ctx.beginPath();
   ctx.moveTo(x + r, y);
   ctx.arcTo(x + w, y, x + w, y + h, r);
@@ -2189,11 +2189,11 @@ const FP = {
   PUNCH_HIT: 0.1, PUNCH_LEN: 0.26, PUNCH_RECOVER: 0.12, PUNCH_COST: 18,
   STAM_REGEN: 20, BLOCK_DRAIN: 7,
   PERFECT: 0.12, GOOD: 0.4, WEAK: 1.2,     // how long a block has been held: perfect → good → weak → guard break
-  REGEN: 0.5, KO_BONUS: 10, KO_HEAL: 20,
-  DMG: { hit: 8, counter: 13, stuff: 10 },
+  HP: 150, REGEN: 0.6, KO_BONUS: 10,
+  DMG: { hit: 7, glance: 4, counter: 13, stuff: 10 },
   ATK: {
-    jab:   { wind: [0.62, 0.42], depth: 0.6,  dmg: 12, color: '#ffd166', name: 'JAB!' },
-    hook:  { wind: [1.0, 0.7],   depth: 1,    dmg: 26, color: '#ff3b3b', name: 'HOOK!' },
+    jab:   { wind: [0.62, 0.42], depth: 0.6,  dmg: 8,  color: '#ffd166', name: 'JAB!' },
+    hook:  { wind: [1.0, 0.7],   depth: 1,    dmg: 17, color: '#ff3b3b', name: 'HOOK!' },
     feint: { wind: [0.9, 0.66],  depth: 0.55, dmg: 0,  color: '#ff3b3b' }   // looks like a hook but the arm stops short
   }
 };
@@ -2204,6 +2204,19 @@ const RIVALS = [
   { jersey: '#f77f00', stripe: '#14172a', helmet: '#d45d00' },
   { jersey: '#22252f', stripe: '#e63946', helmet: '#16161c' }
 ];
+/* The opponents, in order: a rival skater, then the final boss, then the final final boss. Beat all three to win.
+   hp: health · diff/ramp: starting difficulty and how fast it climbs during the fight
+   react: chance to block a punch to its open side · dmg: damage multiplier · speed: wind-up time multiplier
+   hook: share of hooks vs jabs · feint/combo: how often it fakes or chains · parry: chance to parry a punch into its guard
+   smart: how much it guards the hand you favour */
+const ROSTER = [
+  { kind: 'skater', label: 'RIVAL', hp: 90, diff: 0, ramp: 0.25, react: 0.22, dmg: 0.75, speed: 1.1, hook: 0.5, feint: 0.6, combo: 0.5, parry: 0.12, smart: 0.2, col: 0 },
+  { kind: 'trump', label: 'FINAL BOSS', name: 'TRUMP', hp: 170, diff: 0.3, ramp: 0.5, react: 0.45, dmg: 1.3, speed: 1.1, hook: 0.7, feint: 1, combo: 0.9, parry: 0.18, smart: 0.4,
+    col: { jersey: '#1f2a44', stripe: '#ffffff', helmet: '#1f2a44', skin: '#f2a65a' } },
+  { kind: 'kim', label: 'FINAL FINAL BOSS', name: 'KIM JONG UN', hp: 250, diff: 0.55, ramp: 0.6, react: 0.6, dmg: 1.5, speed: 0.85, hook: 0.35, feint: 1.5, combo: 1.8, parry: 0.28, smart: 0.6,
+    col: { jersey: '#2b2d33', stripe: '#2b2d33', helmet: '#16161c', skin: '#f1d2b4' } }
+];
+const TRUMP_LINES = ['SAD!', "YOU'RE FIRED!", 'TREMENDOUS!', 'HUGE!'];
 const FP_KEYS = { KeyQ: ['punch', 'L'], KeyE: ['punch', 'R'], KeyA: ['block', 'L'], KeyD: ['block', 'R'] };
 const SIDES = ['L', 'R'], sgn = s => s === 'L' ? -1 : 1, otherSide = s => s === 'L' ? 'R' : 'L';
 const P_LERP = (a, b, t) => ({ x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), s: lerp(a.s, b.s, t) });
@@ -2212,21 +2225,22 @@ class IceBrawlFP extends IceBrawl {
   get iceY() { return this.v.H * 0.5; }
   get feetY() { return this.v.H * 0.74; }
   get k() { return this.v.H / 480; }
-  get meter() { return this.balance / 100; }
-  get diff() { return clamp(this.time / 70 + (this.round - 1) * 0.15, 0, 1); }
+  get meter() { return this.balance / FP.HP; }
+  get diff() { const p = this.e.p; return clamp(p.diff + this.e.ft / 60 * p.ramp, 0, 1); }
   reset() {
     super.reset();
-    this.bonus = 0; this.round = 1; this.kos = 0; this.combo = 0; this.touch = !!this.touch; this.stamina = 100; this.slow = 0; this.flash = 0; this.fall = 0;
+    this.balance = FP.HP; this.bonus = 0; this.round = 1; this.kos = 0; this.combo = 0; this.touch = !!this.touch; this.stamina = 100; this.slow = 0; this.flash = 0; this.fall = 0;
     this.hands = {}; this.held = {};
     for (const s of SIDES) { this.hands[s] = { st: 'rest', t: 0, bt: 0, stunT: 0, resolved: false, pos: null }; this.held[s] = new Set(); }
     this.pointers = new Map(); this.usage = { L: 0, R: 0 }; this.lastPunches = [];
     this.e = this.newRival();
   }
   newRival() {
-    const hp = 120 + 30 * (this.round - 1);
-    return { mode: 'guard', modeT: 0, gapT: 1.3, guard: Math.random() < 0.5 ? 'L' : 'R', guardT: rand(0.8, 1.6),
-      hp, maxHp: hp, atk: null, combo: 0, punish: null, flinch: 0, flinchDir: 1, drop: 0,
-      col: Object.assign({}, RIVALS[(this.round - 1) % RIVALS.length], { skin: SKINS[(Math.random() * SKINS.length) | 0] }),
+    const p = ROSTER[this.round - 1];
+    const col = typeof p.col === 'number' ? Object.assign({}, RIVALS[p.col], { skin: SKINS[(Math.random() * SKINS.length) | 0] }) : p.col;
+    return { p, kind: p.kind, ft: 0, guardSince: -1, guardTo: null, guardDelay: 0, lastHit: null, mode: 'guard', modeT: 0, gapT: 1.3, guard: Math.random() < 0.5 ? 'L' : 'R', guardT: rand(0.8, 1.6),
+      hp: p.hp, maxHp: p.hp, atk: null, combo: 0, punish: null, flinch: 0, flinchDir: 1, drop: 0,
+      col,
       fist: { L: null, R: null } };
   }
 
@@ -2272,21 +2286,27 @@ class IceBrawlFP extends IceBrawl {
     if (E.mode === 'tell') {
       // only a slow hook can be cut off, and only early in its wind-up; otherwise the other hand guards
       if (s === E.atk.side && E.atk.type === 'hook' && E.atk.prog < 0.5) { this.hitRival(FP.DMG.stuff, s, 'STUFFED!', '#ffcf4a'); if (E.mode === 'tell') { E.mode = 'flinch'; E.modeT = 0.4; E.combo = 0; } return; }
-      return this.blocked(s, Math.random() < 0.3);
+      if (s === E.atk.side) return this.hitRival(FP.DMG.glance, s, 'POW!', '#ffcf4a');   // that arm is pulled back, not guarding: a glancing hit, but you still eat the punch
+      return this.blocked(s, Math.random() < E.p.parry);
     }
     if (E.mode === 'strike' && s === E.atk.side) return this.hitRival(FP.DMG.hit, s, 'POW!', '#ffcf4a');   // its punching arm is still out
+    if (E.mode === 'flinch') {                       // still reeling: the other hand follows up for a quick 1-2
+      if (s !== E.lastHit) return this.hitRival(FP.DMG.hit * 0.75, s, 'POW!', '#ffcf4a');
+      return this.blocked(s, false);
+    }
     if (E.mode !== 'guard') return this.blocked(s, false);
-    // guarding: the guarded side blocks, the open side may get a late reaction
+    // guarding: only a guard that is up and settled blocks; the open side always gets hit
     const spam = this.lastPunches.length >= 3 && this.lastPunches.slice(-3).every(x => x === s);
-    if (s === E.guard) return this.blocked(s, spam || Math.random() < 0.15 + 0.05 * this.round);
-    const habit = this.usage[s] / (this.usage.L + this.usage.R + 1);
-    const react = clamp(0.3 + 0.1 * (this.round - 1) + 0.15 * this.diff + habit * 0.25, 0, 0.8);
-    if (Math.random() < react) { E.guard = s; E.guardT = rand(0.6, 1.4); return this.blocked(s, false); }
+    if (s === E.guard && this.t - E.guardSince > 0.15) return this.blocked(s, spam || Math.random() < E.p.parry);
     this.hitRival(FP.DMG.hit, s, 'POW!', '#ffcf4a');
+    // it learns: after a visible delay it may move its guard to where you just hit it
+    const habit = this.usage[s] / (this.usage.L + this.usage.R + 1);
+    if (Math.random() < clamp(E.p.react + 0.15 * this.diff + habit * 0.25, 0, 0.85)) { E.guardTo = s; E.guardDelay = rand(0.15, 0.3); }
   }
   hitRival(dmg, s, txt, col) {
     const E = this.e, L = this.layout();
-    E.hp -= dmg; E.flinch = 1; E.flinchDir = sgn(s);
+    E.hp -= dmg; E.flinch = 1; E.flinchDir = sgn(s); E.lastHit = s;
+    if (E.kind === 'trump' && Math.random() < 0.15 && E.hp > 0) addText(this.texts, 'FAKE NEWS!', L.cx - sgn(s) * 90 * L.k, L.head - 90 * L.k, '#ffffff', 24);
     if (E.mode === 'guard') { E.mode = 'flinch'; E.modeT = 0.22; }
     addText(this.texts, txt, L.cx + sgn(s) * 70 * L.k, L.head - 40 * L.k, col, txt === 'POW!' ? 32 : 36);
     this.shake = Math.max(this.shake, 0.35); this.cheer = Math.max(this.cheer, 0.5);
@@ -2301,12 +2321,13 @@ class IceBrawlFP extends IceBrawl {
     } else {
       h.st = 'recoil'; h.t = 0;
       addText(this.texts, 'BLOCKED', L.cx + sgn(s) * 60 * L.k, L.head - 30 * L.k, '#c9d3de', 22);
+      if (E.mode === 'guard' && Math.random() < 0.6) { E.punish = s; E.gapT = Math.min(E.gapT, 0.1); }   // blocked punches invite a quick counter
     }
   }
   koRival() {
     const E = this.e, { W, H } = this.v;
     E.hp = 0; E.mode = 'ko'; E.modeT = 2.6; E.combo = 0;
-    this.kos++; this.bonus += FP.KO_BONUS; this.balance = Math.min(100, this.balance + FP.KO_HEAL);
+    this.kos++; this.bonus += FP.KO_BONUS; this.balance = FP.HP;   // full health for the next opponent
     this.cheer = 1; this.shake = 1;
     addText(this.texts, 'KNOCKOUT!', W / 2, H * 0.3, '#ffcf4a', 48);
     addText(this.texts, `+${FP.KO_BONUS}s`, W / 2, H * 0.42, '#7dffb0', 30);
@@ -2315,33 +2336,38 @@ class IceBrawlFP extends IceBrawl {
   /* ---------- the rival ---------- */
   gap() { const d = this.diff; return (1.2 - 0.6 * d) + Math.random() * (0.7 - 0.35 * d); }
   pickGuard() {
-    const E = this.e, u = this.usage, smart = clamp(0.3 + 0.12 * (this.round - 1), 0, 0.8);
-    E.guard = Math.random() < lerp(0.5, (u.L + 0.5) / (u.L + u.R + 1), smart) ? 'L' : 'R';   // guards the side you punch most
+    const E = this.e, u = this.usage, smart = E.p.smart;
+    this.setGuard(Math.random() < lerp(0.5, (u.L + 0.5) / (u.L + u.R + 1), smart) ? 'L' : 'R');   // guards the side you punch most
     E.guardT = rand(0.7, 1.7);
+  }
+  setGuard(s) {
+    const E = this.e;
+    if (E.guard !== s) E.guardSince = this.t;                            // a guard on the move doesn't block yet
+    E.guard = s;
   }
   nextAttack() {
     const E = this.e, d = this.diff, r = Math.random();
-    const feintP = this.time > 10 ? 0.1 + 0.15 * d : 0;
-    const type = r < feintP ? 'feint' : r < feintP + 0.45 ? 'jab' : 'hook';
+    const feintP = E.ft > 6 ? (0.1 + 0.15 * d) * E.p.feint : 0;
+    const type = r < feintP ? 'feint' : r < feintP + (1 - feintP) * (1 - E.p.hook) ? 'jab' : 'hook';
     let side = Math.random() < 0.5 ? 'L' : 'R';
     const bl = SIDES.filter(s => this.hands[s].st === 'block');
     if (bl.length === 1 && Math.random() < 0.35 + 0.35 * d) side = otherSide(bl[0]);   // goes around a held block
     let speed = 1;
     if (E.punish) { side = E.punish; E.punish = null; speed = 0.75; }
-    E.combo = type !== 'feint' && this.time > 15 && Math.random() < 0.15 + 0.3 * d ? (Math.random() < d * 0.6 ? 2 : 1) : 0;
+    E.combo = type !== 'feint' && E.ft > 8 && Math.random() < (0.15 + 0.3 * d) * E.p.combo ? (Math.random() < d * 0.6 ? 2 : 1) : 0;
     this.startAttack(type, side, speed);
   }
   startAttack(type, side, speed = 1) {
-    const A = FP.ATK[type], d = this.diff, dur = lerp(A.wind[0], A.wind[1], d) * speed;
-    const hitch = type === 'hook' && this.time > 10 && Math.random() < 0.2 + 0.3 * d;   // freezes mid wind-up to bait an early block
-    const E = this.e; E.mode = 'tell'; E.guard = otherSide(side);
+    const A = FP.ATK[type], d = this.diff, dur = lerp(A.wind[0], A.wind[1], d) * speed * this.e.p.speed;
+    const hitch = type === 'hook' && this.e.ft > 6 && Math.random() < 0.2 + 0.3 * d;   // freezes mid wind-up to bait an early block
+    const E = this.e; E.mode = 'tell'; E.guardTo = null; this.setGuard(otherSide(side));
     E.atk = { type, side, el: 0, prog: 0, dur, hitchAt: hitch ? dur * rand(0.4, 0.65) : -1, hitchLen: hitch ? rand(0.2, 0.4) : 0 };
   }
   impact() {
     const E = this.e, a = E.atk, s = a.side, { W, H } = this.v, k = this.k;
     const tx = W / 2 + sgn(s) * 120 * k, ty = H * 0.5;
     if (a.type === 'feint') { E.mode = 'feint'; E.modeT = 0.14; addText(this.texts, 'FAKE!', tx, ty - 60 * k, '#ff9de0', 28); return; }
-    const A = FP.ATK[a.type], dmg = A.dmg * (1 + 0.5 * this.diff), h = this.hands[s];
+    const A = FP.ATK[a.type], dmg = A.dmg * E.p.dmg * (1 + 0.5 * this.diff), h = this.hands[s];
     E.mode = 'strike'; E.modeT = 0.32;
     if (h.st === 'block') {
       const bt = this.stamina <= 0 ? h.bt + FP.GOOD : h.bt;          // out of stamina: no perfect blocks
@@ -2358,7 +2384,16 @@ class IceBrawlFP extends IceBrawl {
     }
     this.combo = 0; this.flash = 1; this.shake = A.dmg > 15 ? 1 : 0.6;
     addText(this.texts, A.name, tx, ty, '#ff6b6b', A.dmg > 15 ? 38 : 30);
+    if (E.kind === 'trump' && Math.random() < 0.6) { const L = this.layout(); addText(this.texts, TRUMP_LINES[(Math.random() * TRUMP_LINES.length) | 0], L.cx, L.head - 95 * L.k, '#ffffff', 26); }
     this.hurt(dmg);
+  }
+  win() {
+    const { W, H } = this.v;
+    this.state = 'winning'; this.endT = 3.5; this.cheer = 1; this.won = true; this.releaseAll();
+    this.bonus = Math.max(this.bonus, Math.ceil(60 - this.time));          // beating everyone is a perfect score
+    this.overTitle = 'Champion of the ice!';
+    this.overText = `You knocked out your rival, Trump and Kim Jong Un in <b>${this.time.toFixed(1)} seconds</b>.`;
+    addText(this.texts, 'CHAMPION!', W / 2, H * 0.3, '#ffcf4a', 56); this.texts[this.texts.length - 1].life = this.texts[this.texts.length - 1].max = 3;
   }
   hurt(d) {
     this.balance -= d;
@@ -2372,11 +2407,12 @@ class IceBrawlFP extends IceBrawl {
     const E = this.e;
     switch (E.mode) {
       case 'guard':
-        E.guardT -= dt; if (E.guardT <= 0) this.pickGuard();
+        E.ft += dt; E.guardT -= dt; if (E.guardT <= 0) this.pickGuard();
+        if (E.guardTo && (E.guardDelay -= dt) <= 0) { this.setGuard(E.guardTo); E.guardTo = null; E.guardT = rand(0.8, 1.6); }
         E.gapT -= dt; if (E.gapT <= 0) this.nextAttack();
         break;
       case 'tell': {
-        const a = E.atk; a.el += dt;
+        const a = E.atk; a.el += dt; E.ft += dt;
         let e = a.el;                                                     // wind-up time minus any hitch pause
         if (a.hitchAt >= 0 && a.el > a.hitchAt) e = a.el < a.hitchAt + a.hitchLen ? a.hitchAt : a.el - a.hitchLen;
         a.prog = Math.min(1, e / a.dur);
@@ -2390,8 +2426,13 @@ class IceBrawlFP extends IceBrawl {
         if (E.mode === 'feint') this.startAttack('jab', otherSide(E.atk.side), 0.7);     // quick punch from the other side
         else if (E.mode === 'strike' && E.combo > 0) { E.combo--; this.startAttack(Math.random() < 0.6 ? 'jab' : 'hook', Math.random() < 0.7 ? otherSide(E.atk.side) : E.atk.side, 0.75); }
         else if (E.mode === 'ko') {
-          this.round++; this.e = this.newRival(); this.e.mode = 'enter'; this.e.modeT = 1; this.e.drop = 1;
-          addText(this.texts, `ROUND ${this.round}`, this.v.W / 2, this.v.H * 0.3, '#ffffff', 40);
+          if (this.round >= ROSTER.length) { this.win(); break; }
+          this.round++; this.e = this.newRival(); const N = this.e, { W, H } = this.v;
+          N.mode = 'enter'; N.modeT = N.p.name ? 1.8 : 1; N.drop = 1;
+          if (N.p.name) {
+            addText(this.texts, N.p.label + '!', W / 2, H * 0.24, '#ff3b3b', 40); this.texts[this.texts.length - 1].life = this.texts[this.texts.length - 1].max = 1.8;
+            addText(this.texts, N.p.name, W / 2, H * 0.38, '#ffcf4a', 46); this.texts[this.texts.length - 1].life = this.texts[this.texts.length - 1].max = 1.8;
+          } else addText(this.texts, N.p.label, W / 2, H * 0.3, '#ffffff', 40);
         } else { E.mode = 'guard'; E.gapT = this.gap(); this.pickGuard(); }
     }
   }
@@ -2407,7 +2448,7 @@ class IceBrawlFP extends IceBrawl {
       if (this.cd <= 0) { this.state = 'running'; this.cheer = 1; addText(this.texts, 'FIGHT!', W / 2, H * 0.34, '#ffcf4a', 46); }
     } else if (this.state === 'running') {
       this.time += dt;
-      this.balance = Math.min(100, this.balance + FP.REGEN * dt);
+      this.balance = Math.min(FP.HP, this.balance + FP.REGEN * dt);
       const blocking = SIDES.filter(s => this.hands[s].st === 'block').length;
       this.stamina = clamp(this.stamina + (blocking ? -FP.BLOCK_DRAIN * blocking : FP.STAM_REGEN) * dt, 0, 100);
       const decay = Math.exp(-dt * 0.5); this.usage.L *= decay; this.usage.R *= decay;
@@ -2424,6 +2465,9 @@ class IceBrawlFP extends IceBrawl {
       if (this.state === 'running') this.updateRival(dt);
     } else if (this.state === 'dying') {
       this.endT -= dt; this.fall = Math.min(1, this.fall + dt * 1.6);
+      if (this.endT <= 0) this.state = 'done';
+    } else if (this.state === 'winning') {
+      this.endT -= dt; this.cheer = 1;
       if (this.endT <= 0) this.state = 'done';
     }
     // animate the rival
@@ -2500,42 +2544,160 @@ class IceBrawlFP extends IceBrawl {
     ctx.strokeStyle = OUT; ctx.lineWidth = w + 8; line(ctx, x1, y1, x2, y2);
     ctx.strokeStyle = col; ctx.lineWidth = w; line(ctx, x1, y1, x2, y2);
   }
+  drawEyes(ctx, hx, hy, k, dazed, mode, brow, browW) {
+    for (const e of [-1, 1]) {
+      const ex = hx + e * 19 * k, ey = hy + 4 * k;
+      ctx.strokeStyle = OUT; ctx.fillStyle = OUT; ctx.lineWidth = 3.5 * k;
+      if (dazed) { line(ctx, ex - 6 * k, ey - 6 * k, ex + 6 * k, ey + 6 * k); line(ctx, ex + 6 * k, ey - 6 * k, ex - 6 * k, ey + 6 * k); }
+      else if (mode === 'celebrate') { ctx.beginPath(); ctx.arc(ex, ey + 3 * k, 7 * k, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+      else circle(ctx, ex, ey, 5 * k);
+      if (!dazed && mode !== 'celebrate') {
+        const angry = mode === 'tell' ? 1 : 0.5;
+        ctx.strokeStyle = brow; ctx.lineWidth = browW * k;
+        line(ctx, ex - e * 11 * k, ey - 14 * k - angry * 2 * k, ex + e * 9 * k, ey - 9 * k + angry * 3 * k);
+      }
+    }
+  }
+  drawMouth(ctx, hx, y, k, dazed, mode) {
+    ctx.strokeStyle = OUT; ctx.lineWidth = 3.5 * k;
+    if (mode === 'celebrate') { ctx.beginPath(); ctx.arc(hx, y - 5 * k, 13 * k, 0.1, Math.PI - 0.1); ctx.stroke(); }
+    else if (dazed) { ctx.beginPath(); ctx.ellipse(hx, y + 1 * k, 8 * k, 10 * k, 0, 0, TAU); ctx.stroke(); }
+    else line(ctx, hx - 12 * k, y, hx + 12 * k, y + (mode === 'tell' ? -3 : 2) * k);
+  }
+  drawSuit(ctx, kind, cx, top, tw, th, k, c) {
+    const x = cx - tw / 2, R = 52 * k;
+    ctx.fillStyle = c.jersey; rr(ctx, x, top, tw, th, R); ctx.fill();
+    ctx.save(); rr(ctx, x, top, tw, th, R); ctx.clip();
+    ctx.strokeStyle = OUT; ctx.lineWidth = 3 * k;
+    if (kind === 'trump') {
+      ctx.fillStyle = '#f4f4f4';                                         // shirt
+      ctx.beginPath(); ctx.moveTo(cx - 36 * k, top - 4 * k); ctx.lineTo(cx + 36 * k, top - 4 * k); ctx.lineTo(cx, top + 120 * k); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#18213a';                                         // lapels
+      for (const g of [-1, 1]) {
+        ctx.beginPath(); ctx.moveTo(cx + g * 36 * k, top - 4 * k); ctx.lineTo(cx + g * 74 * k, top + 12 * k); ctx.lineTo(cx + g * 50 * k, top + 60 * k);
+        ctx.lineTo(cx + g * 6 * k, top + 132 * k); ctx.lineTo(cx, top + 120 * k); ctx.closePath(); ctx.fill(); ctx.stroke();
+      }
+      ctx.fillStyle = '#d62828';                                         // the extra long red tie
+      ctx.beginPath(); ctx.moveTo(cx - 11 * k, top); ctx.lineTo(cx + 11 * k, top); ctx.lineTo(cx + 7 * k, top + 20 * k); ctx.lineTo(cx - 7 * k, top + 20 * k); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx - 7 * k, top + 20 * k); ctx.lineTo(cx + 7 * k, top + 20 * k); ctx.lineTo(cx + 18 * k, top + 330 * k);
+      ctx.lineTo(cx, top + 350 * k); ctx.lineTo(cx - 18 * k, top + 330 * k); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#ffffff'; circle(ctx, cx + 56 * k, top + 44 * k, 5 * k); ctx.fillStyle = '#2f6fe0'; circle(ctx, cx + 56 * k, top + 44 * k, 2.5 * k);
+    } else {
+      ctx.strokeStyle = 'rgba(0,0,0,.35)'; line(ctx, cx, top, cx, top + th);  // tunic placket, buttons, pockets
+      ctx.fillStyle = '#4a4e57';
+      for (let i = 0; i < 6; i++) circle(ctx, cx + 7 * k, top + 34 * k + i * 42 * k, 4.5 * k);
+      for (const g of [-1, 1]) { rr(ctx, cx + g * 72 * k - 25 * k, top + 56 * k, 50 * k, 38 * k, 6 * k); ctx.stroke(); line(ctx, cx + g * 72 * k - 25 * k, top + 66 * k, cx + g * 72 * k + 25 * k, top + 66 * k); }
+    }
+    ctx.restore();
+    ctx.strokeStyle = OUT; ctx.lineWidth = 4 * k; rr(ctx, x, top, tw, th, R); ctx.stroke();
+    if (kind === 'kim') { ctx.fillStyle = c.jersey; rr(ctx, cx - 36 * k, top - 10 * k, 72 * k, 24 * k, 8 * k); ctx.fill(); ctx.stroke(); }   // high collar
+  }
+  drawTrumpHead(ctx, hx, hy, k, dazed, mode) {
+    const skin = '#f2a65a', wr = 'rgba(125,60,20,.55)';
+    ctx.strokeStyle = OUT; ctx.lineWidth = 3.5 * k;
+    // saggy neck
+    ctx.fillStyle = skin; ctx.beginPath(); ctx.ellipse(hx, hy + 46 * k, 30 * k, 18 * k, 0, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = wr; ctx.lineWidth = 2 * k;
+    for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.arc(hx, hy + 38 * k + i * 6 * k, 18 * k, 0.25 * Math.PI, 0.75 * Math.PI); ctx.stroke(); }
+    ctx.strokeStyle = OUT; ctx.lineWidth = 3.5 * k;
+    for (const g of [-1, 1]) { ctx.beginPath(); ctx.ellipse(hx + g * 50 * k, hy + 8 * k, 10 * k, 16 * k, 0, 0, TAU); ctx.fill(); ctx.stroke(); }   // ears
+    ctx.fillStyle = '#efe9da'; for (const g of [-1, 1]) { ctx.beginPath(); ctx.ellipse(hx + g * 46 * k, hy - 12 * k, 9 * k, 17 * k, 0, 0, TAU); ctx.fill(); }   // thin white sides
+    // face, wider at the jowls
+    ctx.fillStyle = skin; ctx.beginPath();
+    ctx.moveTo(hx, hy - 52 * k);
+    ctx.bezierCurveTo(hx + 34 * k, hy - 52 * k, hx + 50 * k, hy - 26 * k, hx + 50 * k, hy + 4 * k);
+    ctx.bezierCurveTo(hx + 52 * k, hy + 34 * k, hx + 34 * k, hy + 54 * k, hx, hy + 54 * k);
+    ctx.bezierCurveTo(hx - 34 * k, hy + 54 * k, hx - 52 * k, hy + 34 * k, hx - 50 * k, hy + 4 * k);
+    ctx.bezierCurveTo(hx - 50 * k, hy - 26 * k, hx - 34 * k, hy - 52 * k, hx, hy - 52 * k);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#f9d3a8'; for (const g of [-1, 1]) { ctx.beginPath(); ctx.ellipse(hx + g * 19 * k, hy + 4 * k, 15 * k, 11 * k, 0, 0, TAU); ctx.fill(); }   // pale rings round the eyes
+    ctx.fillStyle = 'rgba(150,80,30,.35)';                                // age spots
+    circle(ctx, hx - 33 * k, hy - 12 * k, 3.2 * k); circle(ctx, hx + 31 * k, hy + 22 * k, 2.6 * k); circle(ctx, hx - 27 * k, hy + 27 * k, 2.2 * k); circle(ctx, hx + 36 * k, hy - 4 * k, 2 * k);
+    // wrinkles: forehead, crow's feet, eye bags, smile lines, jowls, chin
+    ctx.strokeStyle = wr; ctx.lineWidth = 2.2 * k;
+    for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.moveTo(hx - 22 * k, hy - 20 * k - i * 7 * k); ctx.quadraticCurveTo(hx, hy - 25 * k - i * 7 * k, hx + 22 * k, hy - 20 * k - i * 7 * k); ctx.stroke(); }
+    for (const g of [-1, 1]) {
+      for (let i = -1; i <= 1; i++) line(ctx, hx + g * 34 * k, hy + 4 * k + i * 3 * k, hx + g * 43 * k, hy + 4 * k + i * 7 * k);
+      ctx.beginPath(); ctx.arc(hx + g * 19 * k, hy + 9 * k, 10 * k, 0.15 * Math.PI, 0.85 * Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.arc(hx + g * 19 * k, hy + 13 * k, 9 * k, 0.25 * Math.PI, 0.75 * Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(hx + g * 9 * k, hy + 16 * k); ctx.quadraticCurveTo(hx + g * 24 * k, hy + 24 * k, hx + g * 21 * k, hy + 40 * k); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(hx + g * 38 * k, hy + 26 * k); ctx.quadraticCurveTo(hx + g * 36 * k, hy + 44 * k, hx + g * 22 * k, hy + 50 * k); ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(hx, hy + 44 * k, 12 * k, 0.15 * Math.PI, 0.85 * Math.PI); ctx.stroke();
+    this.drawEyes(ctx, hx, hy, k, dazed, mode, '#e9dcb0', 5);
+    // pursed mouth
+    if (mode === 'celebrate' || dazed) this.drawMouth(ctx, hx, hy + 32 * k, k, dazed, mode);
+    else { ctx.fillStyle = '#c96f5a'; ctx.strokeStyle = OUT; ctx.lineWidth = 3 * k; ctx.beginPath(); ctx.ellipse(hx, hy + 32 * k, mode === 'tell' ? 10 * k : 8 * k, mode === 'tell' ? 8 * k : 5 * k, 0, 0, TAU); ctx.fill(); ctx.stroke(); }
+    // blond swoop
+    ctx.fillStyle = '#f4d27a'; ctx.strokeStyle = OUT; ctx.lineWidth = 3.5 * k;
+    ctx.beginPath(); ctx.moveTo(hx - 50 * k, hy - 4 * k);
+    ctx.bezierCurveTo(hx - 60 * k, hy - 52 * k, hx - 20 * k, hy - 76 * k, hx + 18 * k, hy - 68 * k);
+    ctx.bezierCurveTo(hx + 62 * k, hy - 62 * k, hx + 70 * k, hy - 30 * k, hx + 54 * k, hy - 14 * k);
+    ctx.bezierCurveTo(hx + 44 * k, hy - 34 * k, hx + 12 * k, hy - 40 * k, hx - 18 * k, hy - 33 * k);
+    ctx.bezierCurveTo(hx - 34 * k, hy - 29 * k, hx - 44 * k, hy - 18 * k, hx - 50 * k, hy - 4 * k);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = '#fff1bf'; ctx.lineWidth = 3 * k;
+    for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.moveTo(hx - 34 * k + i * 8 * k, hy - 40 * k + i * 2 * k); ctx.quadraticCurveTo(hx + 10 * k, hy - 66 * k + i * 8 * k, hx + 48 * k - i * 6 * k, hy - 30 * k + i * 4 * k); ctx.stroke(); }
+  }
+  drawKimHead(ctx, hx, hy, k, dazed, mode) {
+    const skin = '#f1d2b4';
+    ctx.strokeStyle = OUT; ctx.lineWidth = 3.5 * k; ctx.fillStyle = skin;
+    for (const g of [-1, 1]) { ctx.beginPath(); ctx.ellipse(hx + g * 54 * k, hy + 6 * k, 10 * k, 15 * k, 0, 0, TAU); ctx.fill(); ctx.stroke(); }
+    ctx.beginPath(); ctx.ellipse(hx, hy + 2 * k, 55 * k, 52 * k, 0, 0, TAU); ctx.fill(); ctx.stroke();       // round, full face
+    ctx.save(); ctx.beginPath(); ctx.ellipse(hx, hy + 2 * k, 55 * k, 52 * k, 0, 0, TAU); ctx.clip();
+    ctx.fillStyle = 'rgba(70,74,84,.45)';                                // shaved sides
+    for (const g of [-1, 1]) ctx.fillRect(g < 0 ? hx - 60 * k : hx + 24 * k, hy - 60 * k, 36 * k, 50 * k);
+    ctx.restore();
+    ctx.fillStyle = 'rgba(255,120,120,.22)'; circle(ctx, hx - 33 * k, hy + 20 * k, 10 * k); circle(ctx, hx + 33 * k, hy + 20 * k, 10 * k);
+    ctx.strokeStyle = 'rgba(140,90,60,.4)'; ctx.lineWidth = 2.2 * k;  // chubby chin
+    ctx.beginPath(); ctx.arc(hx, hy + 44 * k, 16 * k, 0.2 * Math.PI, 0.8 * Math.PI); ctx.stroke();
+    // tall black top, flat and swept back
+    ctx.fillStyle = '#17171c'; ctx.strokeStyle = OUT; ctx.lineWidth = 3.5 * k;
+    ctx.beginPath(); ctx.moveTo(hx - 30 * k, hy - 22 * k);
+    ctx.lineTo(hx - 34 * k, hy - 70 * k); ctx.quadraticCurveTo(hx, hy - 84 * k, hx + 34 * k, hy - 72 * k);
+    ctx.lineTo(hx + 30 * k, hy - 22 * k); ctx.quadraticCurveTo(hx, hy - 34 * k, hx - 30 * k, hy - 22 * k);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.lineWidth = 3 * k;
+    for (let i = 0; i < 3; i++) line(ctx, hx - 18 * k + i * 14 * k, hy - 36 * k, hx - 24 * k + i * 16 * k, hy - 70 * k);
+    this.drawEyes(ctx, hx, hy, k, dazed, mode, OUT, 6);
+    if (mode === 'celebrate' || dazed) this.drawMouth(ctx, hx, hy + 30 * k, k, dazed, mode);
+    else { ctx.strokeStyle = OUT; ctx.lineWidth = 3.5 * k; ctx.beginPath(); ctx.moveTo(hx - 10 * k, hy + 31 * k); ctx.quadraticCurveTo(hx + 2 * k, hy + (mode === 'tell' ? 27 : 35) * k, hx + 12 * k, hy + 28 * k); ctx.stroke(); }
+  }
   drawRival(ctx) {
     const E = this.e, L = this.layout(), k = L.k, c = E.col, { H } = this.v;
     ctx.save();
     if (E.drop > 0.01) { ctx.translate(L.cx, H); ctx.rotate(E.drop * 0.45 * E.flinchDir); ctx.translate(-L.cx, -H); }
-    // torso
-    const tw = 210 * k, top = L.sh - 24 * k;
-    ctx.fillStyle = c.jersey; rr(ctx, L.cx - tw / 2, top, tw, H - top + 60 * k, 52 * k); ctx.fill();
-    ctx.save(); rr(ctx, L.cx - tw / 2, top, tw, H - top + 60 * k, 52 * k); ctx.clip();
-    ctx.fillStyle = c.stripe; ctx.fillRect(L.cx - tw / 2, top + 40 * k, tw, 9 * k); ctx.fillRect(L.cx - tw / 2, top + 150 * k, tw, 22 * k);
-    ctx.restore();
-    ctx.strokeStyle = OUT; ctx.lineWidth = 4 * k; rr(ctx, L.cx - tw / 2, top, tw, H - top + 60 * k, 52 * k); ctx.stroke();
-    // head
+    const tw = 210 * k, top = L.sh - 24 * k, th = Math.max(120 * k, H - top + 60 * k);   // stays valid while a knocked-out rival drops off screen
+    if (E.kind === 'skater') {
+      ctx.fillStyle = c.jersey; rr(ctx, L.cx - tw / 2, top, tw, th, 52 * k); ctx.fill();
+      ctx.save(); rr(ctx, L.cx - tw / 2, top, tw, th, 52 * k); ctx.clip();
+      ctx.fillStyle = c.stripe; ctx.fillRect(L.cx - tw / 2, top + 40 * k, tw, 9 * k); ctx.fillRect(L.cx - tw / 2, top + 150 * k, tw, 22 * k);
+      ctx.restore();
+      ctx.strokeStyle = OUT; ctx.lineWidth = 4 * k; rr(ctx, L.cx - tw / 2, top, tw, th, 52 * k); ctx.stroke();
+    } else this.drawSuit(ctx, E.kind, L.cx, top, tw, th, k, c);
     const dazed = E.mode === 'open' || E.mode === 'ko' || E.flinch > 0.5;
-    const hx = L.cx + E.flinchDir * E.flinch * 16 * k + (E.mode === 'open' ? Math.sin(this.t * 9) * 8 * k : 0), hy = L.head;
-    ctx.fillStyle = c.skin; ctx.beginPath(); ctx.arc(hx, hy, 50 * k, 0, TAU); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = c.helmet; ctx.beginPath(); ctx.arc(hx, hy - 4 * k, 54 * k, Math.PI * 1.04, Math.PI * 1.96); ctx.closePath(); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = 'rgba(255,255,255,.35)'; rr(ctx, hx - 30 * k, hy - 44 * k, 22 * k, 7 * k, 3 * k); ctx.fill();
-    ctx.strokeStyle = OUT; ctx.lineWidth = 3.5 * k; ctx.fillStyle = OUT;
-    for (const e of [-1, 1]) {
-      const ex = hx + e * 19 * k, ey = hy + 4 * k;
-      if (dazed) { line(ctx, ex - 6 * k, ey - 6 * k, ex + 6 * k, ey + 6 * k); line(ctx, ex + 6 * k, ey - 6 * k, ex - 6 * k, ey + 6 * k); }
-      else if (E.mode === 'celebrate') { ctx.beginPath(); ctx.arc(ex, ey + 3 * k, 7 * k, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
-      else {
-        circle(ctx, ex, ey, 5 * k);
-        const angry = E.mode === 'tell' ? 1 : 0.5;
-        line(ctx, ex - e * 10 * k, ey - 13 * k - angry * 2 * k, ex + e * 8 * k, ey - 9 * k + angry * 3 * k);
-      }
+    const hx = L.cx + E.flinchDir * E.flinch * 16 * k + (E.mode === 'open' ? Math.sin(this.t * 9) * 8 * k : 0);
+    if (E.kind === 'trump') this.drawTrumpHead(ctx, hx, L.head + 10 * k, k, dazed, E.mode);   // a little stooped
+    else if (E.kind === 'kim') this.drawKimHead(ctx, hx, L.head, k, dazed, E.mode);
+    else {
+      const hy = L.head;
+      ctx.strokeStyle = OUT; ctx.lineWidth = 4 * k;
+      ctx.fillStyle = c.skin; ctx.beginPath(); ctx.arc(hx, hy, 50 * k, 0, TAU); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = c.helmet; ctx.beginPath(); ctx.arc(hx, hy - 4 * k, 54 * k, Math.PI * 1.04, Math.PI * 1.96); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,.35)'; rr(ctx, hx - 30 * k, hy - 44 * k, 22 * k, 7 * k, 3 * k); ctx.fill();
+      this.drawEyes(ctx, hx, hy, k, dazed, E.mode, OUT, 3.5);
+      this.drawMouth(ctx, hx, hy + 27 * k, k, dazed, E.mode);
     }
-    if (E.mode === 'celebrate') { ctx.beginPath(); ctx.arc(hx, hy + 22 * k, 13 * k, 0.1, Math.PI - 0.1); ctx.stroke(); }
-    else if (dazed) { ctx.beginPath(); ctx.ellipse(hx, hy + 28 * k, 8 * k, 10 * k, 0, 0, TAU); ctx.stroke(); }
-    else line(ctx, hx - 12 * k, hy + 27 * k, hx + 12 * k, hy + (E.mode === 'tell' ? 24 : 29) * k);
     // arms + fists
     for (const s of SIDES) {
       const f = E.fist[s] || this.fistTarget(s), g = sgn(s);
       const sx = L.cx + g * 88 * k, sy = L.sh + 6 * k;
       this.drawLimb(ctx, sx, sy, f.x, f.y, 36 * k * Math.sqrt(f.s), c.jersey);
+      if (E.kind === 'trump') {                                           // white shirt cuff
+        const a = Math.atan2(sy - f.y, sx - f.x), d = 24 * k * f.s, w = 34 * k * Math.sqrt(f.s);
+        ctx.lineCap = 'butt'; ctx.strokeStyle = OUT; ctx.lineWidth = w + 6 * k; line(ctx, f.x + Math.cos(a) * d, f.y + Math.sin(a) * d, f.x + Math.cos(a) * (d + 11 * k), f.y + Math.sin(a) * (d + 11 * k));
+        ctx.strokeStyle = '#f4f4f4'; ctx.lineWidth = w; line(ctx, f.x + Math.cos(a) * (d + 1.5 * k), f.y + Math.sin(a) * (d + 1.5 * k), f.x + Math.cos(a) * (d + 9.5 * k), f.y + Math.sin(a) * (d + 9.5 * k)); ctx.lineCap = 'round';
+      }
       this.drawFist(ctx, f.x, f.y, 26 * k * f.s, c.skin, false);
     }
     ctx.restore();
@@ -2589,12 +2751,12 @@ class IceBrawlFP extends IceBrawl {
     const { W, H } = this.v, k = this.k, E = this.e;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     // rival health
-    const bw = 190, bx = W - bw - 22, by = 40;
+    const bw = 230, bx = W - bw - 22, by = 40;
     ctx.fillStyle = 'rgba(14,22,44,.7)'; rr(ctx, bx - 10, by - 28, bw + 20, 50, 14); ctx.fill();
     ctx.fillStyle = 'rgba(255,255,255,.15)'; rr(ctx, bx, by, bw, 9, 4); ctx.fill();
-    ctx.fillStyle = E.col.jersey; rr(ctx, bx, by, Math.max(0, bw * E.hp / E.maxHp), 9, 4); ctx.fill();
+    ctx.fillStyle = E.p.name ? '#ff3b3b' : E.col.jersey; rr(ctx, bx, by, Math.max(0, bw * E.hp / E.maxHp), 9, 4); ctx.fill();
     ctx.font = `900 13px ${FONT}`; ctx.fillStyle = '#eaf4ff';
-    ctx.fillText(`ROUND ${this.round}  ·  KOs ${this.kos}${this.bonus ? `  (+${this.bonus}s)` : ''}`, bx + bw / 2, by - 13);
+    ctx.fillText(`${E.p.name || E.p.label}  ·  KOs ${this.kos}/${ROSTER.length}`, bx + bw / 2, by - 13);
     // your stamina
     const sw = 170, sx = W / 2 - sw / 2, sy = H - 22;
     ctx.fillStyle = 'rgba(14,22,44,.6)'; rr(ctx, sx - 4, sy - 4, sw + 8, 14, 7); ctx.fill();
@@ -2689,11 +2851,17 @@ const GAMES = [
   {
     id: 'brawlfp', name: 'Ice Brawl: Face-Off', icon: '👊', overTitle: 'Down on the ice!', meterLabel: 'Balance',
     art: 'radial-gradient(circle at 50% 38%,#e63946 0 22%,transparent 23%),linear-gradient(180deg,#1b2440 0%,#2a3456 55%,#dcefff 55%,#f4faff 100%)',
-    desc: 'First-person hockey fight. Punch and block with each hand, time your blocks and knock rivals out.',
-    howTo: '<b>Q</b>/<b>E</b> punch, hold <b>A</b>/<b>D</b> to block (touch: top half punches, bottom half blocks). Block the side the punch comes from just before it lands for a <b>PERFECT</b> and a free counter. Long blocks get weak. Each knockout adds <b>+10s</b>.',
+    desc: 'First-person hockey fight. Punch and block with each hand, knock out your rival, then Trump and Kim Jong Un.',
+    howTo: '<b>Q</b>/<b>E</b> punch, hold <b>A</b>/<b>D</b> to block (touch: top half punches, bottom half blocks). Block the side the punch comes from just before it lands for a <b>PERFECT</b> and a free counter. Long blocks get weak. Beat your rival, then the final boss and the final final boss. Each knockout adds <b>+10s</b>.',
     targetTime: 60,
     theme: { hudBg: 'rgba(14,22,44,.62)', hudInk: '#eaf4ff', panelBg: 'linear-gradient(165deg,#ffffff,#dcecf8)', panelInk: '#13223f', panelEdge: '#2f6fe0', accent: '#2f6fe0', accentInk: '#ffffff' },
     create: v => new IceBrawlFP(v)
+  },
+  {
+    // Game 6 is a separate platformer page, linked like Slapshot Squirrels
+    id: 'hophop', name: 'Hop Hop Hill', icon: '🏃', href: 'platformer.html', tag: '1 player · Opens the game',
+    art: 'linear-gradient(180deg,#7fd3ff 0%,#d9f3ff 60%,#4fbf4a 60%,#8a5a34 100%)',
+    desc: 'A simple platformer: run, jump, stomp enemies and beat a boss at the end of each of the three levels.'
   }
 ];
 const available = () => GAMES.filter(g => !g.locked && !g.href);   // games that use the shared survival framework
@@ -2745,7 +2913,7 @@ function renderHub() {
     b.style.setProperty('--art', g.art);
     const sc = best[g.id] || 0;
     b.innerHTML = `<div class="art">${g.icon}</div><div class="body"><span class="num">Game ${i + 1}</span><h3>${g.name}</h3><p>${g.desc}</p>` +
-      (g.href ? `<div class="best"><span>2 players · Opens the game</span></div>` :
+      (g.href ? `<div class="best"><span>${g.tag || '2 players · Opens the game'}</span></div>` :
        g.locked ? `<div class="best">Locked</div>` :
         `<div class="best"><span>Best</span><div class="bar"><i style="width:${sc}%"></i></div><span>${sc}/100</span></div>`) + `</div>`;
     if (g.locked) b.setAttribute('aria-disabled', 'true');
@@ -2785,7 +2953,7 @@ function showGameOver() {
   if (playAll) playAll.results.push({ def: curDef, time, score: sc });
   const last = playAll && playAll.idx === playAll.queue.length - 1;
   const next = playAll ? (last ? 'to see your results' : 'for the next game') : 'to play again';
-  openOverlay(`${tag()}<h2>${curDef.overTitle}</h2><p class="howto">You survived <b>${cur.time.toFixed(1)} seconds</b>${cur.bonus ? ` + <b>${cur.bonus}s</b> knockout bonus` : ''}.</p>` + (cur.overNote ? `<p class="target">${cur.overNote}</p>` : '') +
+  openOverlay(`${tag()}<h2>${cur.overTitle || curDef.overTitle}</h2><p class="howto">${cur.overText || `You survived <b>${cur.time.toFixed(1)} seconds</b>${cur.bonus ? ` + <b>${cur.bonus}s</b> knockout bonus` : ''}.`}</p>` + (cur.overNote ? `<p class="target">${cur.overNote}</p>` : '') +
     `<div class="score">${sc}<span>/100</span></div><p class="target">${isBest && sc > 0 ? 'New best score!' : `Your best: ${best[curDef.id]}/100`}</p>` +
     `${hint(next)}<div class="row"><button class="link-btn" data-act="hub">Back to hub</button></div>`);
 }
