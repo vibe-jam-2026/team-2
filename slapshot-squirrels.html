@@ -11,7 +11,8 @@
   each other. Whatever you do: DO NOT touch the red button.
 
   Sound effects are synthesized in the browser (Web Audio API); M mutes.
-  Microphone extras: T = trash talk (speech bubbles; the AI talks back),
+  Microphone extras: T = trash talk (speech bubbles; the AI talks back, heckles
+  during your turn and loves to mock Färjestad, Oskarshamn and Linköping),
   B = record your own battlecry that plays when you shoot.
   Voice shooting: while aiming, say "shoot" (or "skjut") instead of pressing Space; V turns it off.
 
@@ -439,7 +440,7 @@ let menuIndex = 0;
 let gameMode = MENU[0];
 
 // The AI's plan for the current turn
-const ai = { wait: 0, dir: 1, walkLeft: 0, targetAim: 45, targetPower: 50, aimed: false };
+const ai = { wait: 0, dir: 1, walkLeft: 0, targetAim: 45, targetPower: 50, aimed: false, chatTimer: 4 };
 
 const active = () => players[current];
 const isAI = p => gameMode.ai && p.index === 1;
@@ -524,6 +525,7 @@ function beginTurn() {
   const firstTurnOfRound = turnNumber % 2 === 0;
   showBanner(`${displayName(p)}'s turn`, p.color, firstTurnOfRound && !megaStage ? bossCountdownText() : null);
   if (isAI(p)) aiBeginTurn(p);
+  ai.chatTimer = rand(3, 6);              // when the AI starts heckling during a human's turn
 }
 
 /** Rounds left before the boss's first appearance (0 once it has arrived). */
@@ -1856,6 +1858,62 @@ const MEGA_LINES = {
   },
 };
 
+// Things the computer says while YOU are moving and aiming
+AI_LINES.en.waiting = ['Tick tock! My acorns are getting old.', "Take your time. I'll just stand here being awesome.",
+  'Aim for the button. I dare you.', 'Are you aiming or napping?', "Whatever you do, don't miss. Oh wait, you will."];
+AI_LINES.sv.waiting = ['Tick tack! Mina ekollon blir gamla.', 'Ta din tid. Jag står här och är grym.',
+  'Sikta på knappen. Om du vågar.', 'Siktar du eller sover du?', 'Vad du än gör, missa inte. Hoppsan, det gör du ju.'];
+MEGA_LINES.en.waiting = ['HURRY UP, TINY SQUIRREL.', 'I HAVE BEEN WAITING SINCE THE ICE AGE.'];
+MEGA_LINES.sv.waiting = ['SKYNDA DIG, LILLA EKORRE.', 'JAG HAR VÄNTAT SEDAN ISTIDEN.'];
+
+// Hockey teams the computer loves to trash talk (friendly rivalry banter)
+const TALK_TEAMS = {
+  farjestad: { name: 'Färjestad', re: /färjestad|farjestad|\bfbk\b|karlstad/ },
+  oskarshamn: { name: 'Oskarshamn', re: /oskarshamn|\biko\b/ },
+  linkoping: { name: 'Linköping', re: /linköping|linkoping|\blhc\b/ },
+};
+const TEAM_LINES = {
+  en: {
+    farjestad: ['You play like Färjestad on a bad day: loud fans, no goals.',
+      "Even Färjestad's water bottles shoot better than you.",
+      'The sun shines in Karlstad, but it sure never shines on your aim.',
+      'Färjestad fan? That explains the aim.'],
+    oskarshamn: ['Oskarshamn called. They want their power play back.',
+      'Oskarshamn has a nuclear plant and still less firepower than me.',
+      'You shoot like Oskarshamn on a long bus trip: tired and way off.',
+      'Is that an Oskarshamn slapshot? I barely felt the breeze.'],
+    linkoping: ['Linköping builds fighter jets. You can\'t even build a decent shot.',
+      'My seagull jet was built in Linköping. Fast, loud and better than you.',
+      'You aim like a Linköping defenceman: eyes closed and hoping.',
+      'Linköping fan? I can tell by how you aim.'],
+  },
+  sv: {
+    farjestad: ['Du spelar som Färjestad en dålig dag: mycket sång på läktaren, inga mål.',
+      'Till och med Färjestads vattenflaskor skjuter bättre än du.',
+      'Solen skiner i Karlstad, men aldrig på ditt sikte.',
+      'Färjestadsfan? Det förklarar siktet.'],
+    oskarshamn: ['Oskarshamn ringde. De vill ha tillbaka sitt powerplay.',
+      'Oskarshamn har ett kärnkraftverk och ändå mindre eldkraft än jag.',
+      'Du skjuter som Oskarshamn på en lång bussresa: trött och helt fel.',
+      'Var det ett Oskarshamnsskott? Jag kände knappt fläkten.'],
+    linkoping: ['I Linköping bygger de stridsflyg. Du kan inte ens bygga ett skott.',
+      'Min måsjet byggdes i Linköping. Snabb, högljudd och bättre än du.',
+      'Du siktar som en LHC-back: blunda och hoppas.',
+      'LHC-fan? Det märks på siktet.'],
+  },
+};
+
+/** A jab at one of the teams (a random one if none is given). */
+function teamLine(team = pickFrom(Object.keys(TALK_TEAMS))) {
+  if (players[1] && players[1].mega) {
+    const n = TALK_TEAMS[team].name.toUpperCase();
+    return pickFrom(talkLang === 'sv'
+      ? [`${n}? JAG ÄTER ${n}-FANS TILL FRUKOST!`, `${n}? ALDRIG HÖRT TALAS OM DEM.`]
+      : [`${n}? I EAT ${n} FANS FOR BREAKFAST!`, `${n}? NEVER HEARD OF THEM.`]);
+  }
+  return pickFrom(TEAM_LINES[talkLang][team]);
+}
+
 // What the player said -> which kind of answer (checked in this order; English and Swedish words)
 const TALK_TOPICS = [
   ['button', /button|knapp/],
@@ -1870,12 +1928,15 @@ const TALK_TOPICS = [
 
 /** Guesses whether a sentence is Swedish (otherwise English). */
 function detectLang(text) {
-  const t = ` ${text.toLowerCase()} `;
-  return /[åäö]/.test(t) || / (jag|du|är|inte|och|det|din|dig|kommer|vad|hej|ska|aldrig) /.test(t) ? 'sv' : 'en';
+  // Team names like "Linköping" have Swedish letters but say nothing about the language
+  const t = ` ${text.toLowerCase().replace(/färjestad|linköping|oskarshamn/g, '')} `;
+  return /[åäö]/.test(t) || / (jag|du|är|inte|och|det|din|dig|kommer|vad|hej|heja|ska|aldrig|vi|ni|vinner|kom igen|bra|mig) /.test(t) ? 'sv' : 'en';
 }
 
 /** One line of the computer's (or the Mega Squirrel's) kind. */
 function aiLine(kind) {
+  // Now and then, the trash talk turns to hockey teams
+  if (['generic', 'waiting', 'youMissed'].includes(kind) && Math.random() < 0.35) return teamLine();
   const set = (players[1].mega ? MEGA_LINES : AI_LINES)[talkLang];
   return pickFrom(set[kind] || set.generic);
 }
@@ -1883,8 +1944,10 @@ function aiLine(kind) {
 /** The computer's answer to something the player said. */
 function aiAnswer(heard) {
   talkLang = detectLang(heard);
-  if (players[1].mega) return aiLine('generic');
   const text = heard.toLowerCase();
+  const team = Object.keys(TALK_TEAMS).find(k => TALK_TEAMS[k].re.test(text));
+  if (team) return teamLine(team);                  // you mentioned a team: the AI mocks it
+  if (players[1].mega) return aiLine('generic');
   const topic = TALK_TOPICS.find(([, re]) => re.test(text));
   if (topic) return aiLine(topic[0]);
   const behind = players[1].health < players[0].health;
@@ -2321,6 +2384,15 @@ function update(dt) {
   updateEffects(dt);
   updateTalk(dt);
   VoiceShoot.update();
+
+  // The computer heckles while a human is moving and aiming
+  if (gameMode.ai && (state === 'move' || state === 'aim') && players.length && !isAI(active())) {
+    ai.chatTimer -= dt;
+    if (ai.chatTimer <= 0) {
+      ai.chatTimer = rand(7, 12);
+      aiTaunt('waiting', 0.8);
+    }
+  }
 
   if (state !== 'title') {
     updatePoops(dt);
